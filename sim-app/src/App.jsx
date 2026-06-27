@@ -2242,30 +2242,34 @@ function AssessmentModal({ sim, onClose }) {
 const PRESET_LABELS = { learning: "Learning", standard: "Standard", advanced: "Advanced", custom: "Custom" };
 
 function LeaderboardModal({ onClose, highlightEntry }) {
-  const [activeTab, setActiveTab] = useState(highlightEntry?.preset || "standard");
+  // Default to "all" when opened from setup (no highlightEntry); default to the run's preset from debrief
+  const [activeTab, setActiveTab] = useState(highlightEntry?.preset || "all");
   const board = useMemo(() => loadLeaderboard(), []);
 
-  const rows = board
-    .filter((e) => e.preset === activeTab)
+  const rows = (activeTab === "all" ? board : board.filter((e) => e.preset === activeTab))
     .sort((a, b) => b.score - a.score)
-    .slice(0, 25);
+    .slice(0, 50);
 
   return (
     <Overlay onClose={onClose}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
         <Award size={20} color={T.action} />
         <h3 style={{ margin: 0, fontSize: 17 }}>Leaderboard</h3>
+        <span style={{ marginLeft: "auto", fontSize: 11, color: T.faint }}>{board.length} total run{board.length !== 1 ? "s" : ""}</span>
       </div>
 
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+        <Chip active={activeTab === "all"} onClick={() => setActiveTab("all")}>All</Chip>
         {Object.entries(PRESET_LABELS).map(([id, label]) => (
-          <Chip key={id} active={activeTab === id} onClick={() => setActiveTab(id)}>{label}</Chip>
+          <Chip key={id} active={activeTab === id} onClick={() => setActiveTab(id)}>
+            {label} <span style={{ color: T.faint, fontSize: 10 }}>({board.filter(e => e.preset === id).length})</span>
+          </Chip>
         ))}
       </div>
 
       {rows.length === 0 ? (
         <div style={{ padding: "28px 0", textAlign: "center", color: T.faint, fontSize: 13 }}>
-          No runs recorded yet for <strong>{PRESET_LABELS[activeTab]}</strong> mode.<br />
+          No runs recorded yet{activeTab !== "all" ? <> for <strong>{PRESET_LABELS[activeTab]}</strong> mode</> : null}.<br />
           <span style={{ fontSize: 12 }}>Complete a run to appear here.</span>
         </div>
       ) : (
@@ -2276,6 +2280,7 @@ function LeaderboardModal({ onClose, highlightEntry }) {
                 <th style={{ padding: "5px 6px", textAlign: "center", color: T.muted, fontWeight: 600, width: 28 }}>#</th>
                 <th style={{ padding: "5px 6px", textAlign: "left", color: T.muted, fontWeight: 600 }}>Player</th>
                 <th style={{ padding: "5px 6px", textAlign: "left", color: T.muted, fontWeight: 600 }}>Run</th>
+                {activeTab === "all" && <th style={{ padding: "5px 6px", textAlign: "left", color: T.muted, fontWeight: 600 }}>Mode</th>}
                 <th style={{ padding: "5px 6px", textAlign: "right", color: T.muted, fontWeight: 600 }}>Score</th>
                 <th style={{ padding: "5px 6px", textAlign: "center", color: T.muted, fontWeight: 600 }}>✓</th>
                 <th style={{ padding: "5px 6px", textAlign: "right", color: T.muted, fontWeight: 600, fontSize: 11 }}>Date</th>
@@ -2295,6 +2300,7 @@ function LeaderboardModal({ onClose, highlightEntry }) {
                     </td>
                     <td style={{ padding: "7px 6px", fontWeight: 600, maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.playerName}</td>
                     <td style={{ padding: "7px 6px", color: T.muted, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.runName}</td>
+                    {activeTab === "all" && <td style={{ padding: "7px 6px", color: T.faint, fontSize: 11 }}>{PRESET_LABELS[e.preset] || e.preset}</td>}
                     <td style={{ padding: "7px 6px", textAlign: "right" }}>
                       <span style={{ color: bandColor, fontWeight: 700, ...mono }}>{e.score.toFixed(1)}</span>
                       <span style={{ color: T.faint, fontSize: 10.5, marginLeft: 4 }}>{e.band}</span>
