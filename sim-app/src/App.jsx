@@ -8,6 +8,7 @@ import {
   Trash2, RotateCcw, Gauge, Plus, X, TrendingUp, BarChart3,
   Activity, LayoutGrid, Flag, ArrowRight, Award, Lightbulb, Sun, Moon,
   FastForward, Rewind, BookOpen, FileText, Loader, Eye, Target, Zap,
+  MoreHorizontal, CheckCheck,
 } from "lucide-react";
 
 /* ============================================================
@@ -1074,6 +1075,13 @@ function SetupScreen({ onStart, onResume, hasSave }) {
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [playerName, setPlayerName] = useState("");
   const [name, setName] = useState("");
+  const lbPreview = useMemo(() => {
+    const board = loadLeaderboard();
+    if (!board.length) return null;
+    const forPreset = board.filter((e) => e.preset === preset);
+    const top = [...board].sort((a, b) => b.score - a.score)[0];
+    return { total: board.length, presetTotal: forPreset.length, top };
+  }, [preset]);
 
   const [annualRate,       setAnnualRate]       = useState(3);
   const [fundingProfile,   setFundingProfile]   = useState("scurve");
@@ -1204,9 +1212,14 @@ function SetupScreen({ onStart, onResume, hasSave }) {
             <Btn kind="primary" onClick={() => onStart(buildConfig())} style={{ flex: 1, justifyContent: "center", padding: "11px" }}>
               <Play size={16} /> Start new run
             </Btn>
-            <Btn onClick={() => setShowLeaderboard(true)} title="View leaderboard">
-              <Award size={15} /> Leaderboard
-            </Btn>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+              <Btn onClick={() => setShowLeaderboard(true)} title="View leaderboard">
+                <Award size={15} /> Leaderboard
+              </Btn>
+              <span style={{ fontSize: 10, color: T.faint, textAlign: "center" }}>
+                {lbPreview ? `${lbPreview.total} run${lbPreview.total !== 1 ? "s" : ""} · best ${lbPreview.top.score.toFixed(1)}` : "no runs yet"}
+              </span>
+            </div>
             <Btn onClick={() => setShowRules(true)} title="Read the rules before starting">
               <BookOpen size={15} /> How to play
             </Btn>
@@ -1257,8 +1270,23 @@ function ActiveRow({ sim, p, onSlow, onSpeed, onSuspend, onAbandon }) {
   const locked = p.political && p.lockUntil && sim.month <= p.lockUntil;
   const blind = sim.config?.blindAlignment;
   const alignColor = p.alignment >= 0.7 ? T.completed : p.alignment >= 0.4 ? T.suspended : T.expired;
+
+  // Status indicators
+  const scheduleStatus = projEnd > 60 ? "critical" : projEnd > 57 ? "warning" : "ok";
+  const burnStatus = thisSpend > sim.availableBalance * 0.25 ? "warning" : "ok";
+  const rowStatus = scheduleStatus === "critical" ? "critical" : (scheduleStatus === "warning" || burnStatus === "warning") ? "warning" : "ok";
+  const leftBorderColor = rowStatus === "critical" ? T.expired : rowStatus === "warning" ? T.suspended : T.completed;
+
+  // Inline abandon confirmation
+  const [confirmAbandon, setConfirmAbandon] = useState(false);
+  useEffect(() => {
+    if (!confirmAbandon) return;
+    const t = setTimeout(() => setConfirmAbandon(false), 3000);
+    return () => clearTimeout(t);
+  }, [confirmAbandon]);
+
   return (
-    <div style={{ padding: "10px 12px", borderBottom: `1px solid ${T.lineSoft}` }}>
+    <div style={{ padding: "10px 12px", borderBottom: `1px solid ${T.lineSoft}`, borderLeft: `3px solid ${leftBorderColor}` }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "flex", alignItems: "center", gap: 6 }}>
@@ -1267,6 +1295,12 @@ function ActiveRow({ sim, p, onSlow, onSpeed, onSuspend, onAbandon }) {
           </div>
           <div style={{ fontSize: 11, color: T.muted, marginTop: 2, ...mono }}>
             BAC {money(p.bacCurrent)} · spend {money(thisSpend)}/mo · ends M{projEnd > 60 ? `${projEnd}⚠` : projEnd}
+          </div>
+          {/* status badges */}
+          <div style={{ display: "flex", gap: 5, marginTop: 4, flexWrap: "wrap" }}>
+            {scheduleStatus === "critical" && <Badge color={T.expired}>⚠ Expires M{projEnd}</Badge>}
+            {scheduleStatus === "warning" && <Badge color={T.suspended}>Late risk M{projEnd}</Badge>}
+            {burnStatus === "warning" && <Badge color={T.suspended}>High burn</Badge>}
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
@@ -1280,12 +1314,21 @@ function ActiveRow({ sim, p, onSlow, onSpeed, onSuspend, onAbandon }) {
         </div>
       </div>
       <div style={{ marginTop: 8 }}><ProgressBar value={prog} color={T.active} /></div>
-      <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
         <Btn kind="ok" onClick={() => onSpeed(p)} style={{ padding: "4px 9px", fontSize: 12 }}><FastForward size={13} /> Speed</Btn>
         <Btn kind="warn" onClick={() => onSlow(p)} style={{ padding: "4px 9px", fontSize: 12 }}><Rewind size={13} /> Slow</Btn>
         <Btn kind="ghost" onClick={() => onSuspend(p.id)} style={{ padding: "4px 9px", fontSize: 12 }}><Pause size={13} /> Suspend</Btn>
-        <Btn kind="danger" disabled={locked} title={locked ? `Politically protected until Month ${p.lockUntil}` : undefined}
-          onClick={() => onAbandon(p.id)} style={{ padding: "4px 9px", fontSize: 12 }}><Trash2 size={13} /> Abandon</Btn>
+        {confirmAbandon ? (
+          <>
+            <Btn kind="danger" onClick={() => onAbandon(p.id)} style={{ padding: "4px 9px", fontSize: 12, outline: `2px solid ${T.expired}`, outlineOffset: 1 }}>
+              <CheckCheck size={13} /> Confirm −2 pts
+            </Btn>
+            <Btn onClick={() => setConfirmAbandon(false)} style={{ padding: "4px 8px", fontSize: 12 }}><X size={12} /></Btn>
+          </>
+        ) : (
+          <Btn kind="danger" disabled={locked} title={locked ? `Politically protected until Month ${p.lockUntil}` : "Click to confirm abandonment"}
+            onClick={() => !locked && setConfirmAbandon(true)} style={{ padding: "4px 9px", fontSize: 12 }}><Trash2 size={13} /> Abandon</Btn>
+        )}
       </div>
     </div>
   );
@@ -1423,17 +1466,71 @@ function ProjectPreviewModal({ sim, project, onAdd, onClose }) {
   );
 }
 
-function AvailableTable({ sim, onAdd, onPreview }) {
+/* ============================================================
+   QUICK-ADD STRIP — top-3 best available projects at a glance
+   ============================================================ */
+function QuickAddStrip({ sim, onAdd, onPreview }) {
   const blind = sim.config?.blindAlignment;
-  const [sort, setSort] = useState(blind ? "bac" : "alignment");
-  const remaining = sim.availableBalance;
+  const monthsLeft = 61 - sim.month;
   const cap = sim.config?.concurrentCap || 0;
   const liveLive = cap > 0 ? sim.projects.filter((x) => x.state === "active" || x.state === "pending").length : 0;
   const capReached = cap > 0 && liveLive >= cap;
-  const rows = sim.projects.filter((p) => p.state === "available").map((p) => {
+
+  const candidates = sim.projects
+    .filter((p) => p.state === "available")
+    .map((p) => {
+      const bac = +(p.bacInitial * inflator(sim.monthlyRate, sim.month)).toFixed(4);
+      return { ...p, bacShown: bac, afford: bac <= sim.availableBalance + 1e-9, finishable: p.durationPlanned <= monthsLeft };
+    })
+    .filter((p) => p.afford && p.finishable)
+    .sort((a, b) => b.alignment - a.alignment)
+    .slice(0, 3);
+
+  if (!candidates.length) return null;
+
+  const alignColor = (a) => a >= 0.7 ? T.completed : a >= 0.4 ? T.suspended : T.expired;
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".06em", color: T.muted, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+        <Zap size={12} color={T.action} /> Top picks — affordable &amp; finishable
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+        {candidates.map((p) => (
+          <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, padding: "6px 10px" }}>
+            <span style={{ fontSize: 11, color: T.faint, ...mono, flexShrink: 0 }}>{p.id}</span>
+            <span style={{ fontSize: 12.5, fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.title}</span>
+            <span style={{ fontSize: 11.5, color: T.muted, ...mono, flexShrink: 0 }}>{money(p.bacShown)}</span>
+            {!blind && <Badge color={alignColor(p.alignment)}>{pct(p.alignment)}</Badge>}
+            <Btn onClick={() => onPreview(p)} title="Preview cash-flow impact" style={{ padding: "3px 7px" }}><Eye size={12} /></Btn>
+            <Btn kind="primary" disabled={capReached} onClick={() => onAdd(p.id)} title={capReached ? "Cap reached" : "Add to portfolio"} style={{ padding: "3px 7px" }}><Plus size={12} /></Btn>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AvailableTable({ sim, onAdd, onPreview }) {
+  const blind = sim.config?.blindAlignment;
+  const [sort, setSort] = useState(blind ? "bac" : "alignment");
+  const [fAfford, setFAfford] = useState(true);
+  const [fFinish, setFFinish] = useState(false);
+  const [fAlign, setFAlign] = useState(false);
+  const remaining = sim.availableBalance;
+  const monthsLeft = 61 - sim.month;
+  const cap = sim.config?.concurrentCap || 0;
+  const liveLive = cap > 0 ? sim.projects.filter((x) => x.state === "active" || x.state === "pending").length : 0;
+  const capReached = cap > 0 && liveLive >= cap;
+  const allRows = sim.projects.filter((p) => p.state === "available").map((p) => {
     const bac = p.bacInitial * inflator(sim.monthlyRate, sim.month);
     return { ...p, bacShown: bac, afford: bac <= remaining + 1e-9 };
   });
+  const rows = allRows.filter((p) =>
+    (!fAfford || p.afford) &&
+    (!fFinish || p.durationPlanned <= monthsLeft) &&
+    (!fAlign  || p.alignment >= 0.7)
+  );
   rows.sort((a, b) => {
     if (sort === "alignment" && !blind) return b.alignment - a.alignment;
     if (sort === "bac") return a.bacShown - b.bacShown;
@@ -1449,6 +1546,15 @@ function AvailableTable({ sim, onAdd, onPreview }) {
   );
   return (
     <div style={{ overflowX: "auto" }}>
+      {/* filter chips */}
+      <div style={{ display: "flex", gap: 6, padding: "6px 8px 4px", flexWrap: "wrap", alignItems: "center" }}>
+        <Chip active={fAfford} onClick={() => setFAfford(!fAfford)}>Affordable</Chip>
+        <Chip active={fFinish} onClick={() => setFFinish(!fFinish)}>Can finish</Chip>
+        {!blind && <Chip active={fAlign} onClick={() => setFAlign(!fAlign)}>High alignment ≥70%</Chip>}
+        <span style={{ fontSize: 11, color: T.faint, marginLeft: 4 }}>
+          {rows.length !== allRows.length ? `${rows.length} of ${allRows.length}` : `${allRows.length} projects`}
+        </span>
+      </div>
       {capReached && <div style={{ fontSize: 11.5, color: T.suspended, padding: "6px 8px", background: T.suspended + "14", borderRadius: 6, margin: "4px 8px 6px" }}>Concurrent cap reached ({liveLive}/{cap}) — complete or suspend a project before adding more.</div>}
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead><tr style={{ borderBottom: `1px solid ${T.line}` }}>
@@ -1853,6 +1959,71 @@ const Chip = ({ active, onClick, children, color }) => (
 );
 
 /* ============================================================
+   DECISION TIMELINE — visual dot-on-axis view of all decisions
+   ============================================================ */
+const DECISION_SYMBOLS = { add: "+", slow: "↓", speed: "↑", suspend: "⏸", resume: "↩", abandon: "✕" };
+
+function DecisionTimeline({ decisions }) {
+  if (!decisions.length) return <div style={{ color: T.faint, fontSize: 12, padding: "8px 0" }}>No decisions recorded.</div>;
+
+  // group by month for stacking
+  const byMonth = {};
+  decisions.forEach((d) => {
+    if (!byMonth[d.month]) byMonth[d.month] = [];
+    byMonth[d.month].push(d);
+  });
+
+  return (
+    <div>
+      {/* axis + dots */}
+      <div style={{ position: "relative", height: 56, marginBottom: 6 }}>
+        {/* axis line */}
+        <div style={{ position: "absolute", top: 28, left: 0, right: 0, height: 2, background: T.lineSoft, borderRadius: 1 }} />
+        {/* quarter ticks */}
+        {Array.from({ length: 20 }, (_, qi) => (
+          <div key={qi} style={{ position: "absolute", left: `${(qi / 20) * 100}%`, top: 24, width: 1, height: 10, background: qi % 4 === 0 ? T.line : T.lineSoft }} />
+        ))}
+        {/* decision dots */}
+        {Object.entries(byMonth).map(([month, ds]) => {
+          const x = ((+month - 0.5) / 60) * 100;
+          return ds.map((d, di) => {
+            const color = dc(d.type);
+            const yOffset = di % 2 === 0 ? 8 : 36;  // alternate above/below axis
+            return (
+              <div key={`${month}-${di}`}
+                title={`M${month} · ${d.type}${(d.s || d.a) ? ` ${Math.round((d.s || d.a) * 100)}%` : ""} · ${d.title}`}
+                style={{
+                  position: "absolute", left: `${x}%`, top: yOffset,
+                  transform: "translateX(-50%)",
+                  width: 18, height: 18, borderRadius: "50%",
+                  background: color + "22", border: `1.5px solid ${color}`,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 9, fontWeight: 700, color, cursor: "default",
+                  zIndex: 1,
+                }}>
+                {DECISION_SYMBOLS[d.type] || "·"}
+              </div>
+            );
+          });
+        })}
+      </div>
+      {/* x-axis labels */}
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: T.faint }}>
+        {[1, 12, 24, 36, 48, 60].map((m) => <span key={m}>M{m}</span>)}
+      </div>
+      {/* legend */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 8, fontSize: 11, color: T.muted }}>
+        {Object.entries(DECISION_SYMBOLS).map(([type, sym]) => (
+          <span key={type} style={{ display: "flex", alignItems: "center", gap: 3 }}>
+            <span style={{ color: dc(type), fontWeight: 700 }}>{sym}</span> {type}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    DEBRIEF
    ============================================================ */
 function Debrief({ sim, onRestart }) {
@@ -1861,6 +2032,7 @@ function Debrief({ sim, onRestart }) {
   const completed = sim.projects.filter((p) => p.state === "completed");
   const deliveredAlign = completed.length ? completed.reduce((a, p) => a + p.alignment, 0) / completed.length : 0;
   const poolAlign = sim.projects.reduce((a, p) => a + p.alignment, 0) / sim.projects.length;
+  const [timelineView, setTimelineView] = useState(true);
   const bandColor = s.final >= 70 ? T.completed : s.final >= 40 ? T.suspended : T.expired;
 
   // Save to leaderboard once on mount and remember the entry for highlighting
@@ -1937,17 +2109,27 @@ function Debrief({ sim, onRestart }) {
         </div>
 
         <Panel style={{ padding: 18, marginBottom: 20 }}>
-          <h3 style={{ margin: "0 0 12px", fontSize: 14 }}>Decision timeline</h3>
-          <div style={{ maxHeight: 220, overflowY: "auto" }}>
-            {sim.decisions.length === 0 && <div style={{ color: T.faint, fontSize: 12 }}>No decisions recorded.</div>}
-            {sim.decisions.map((d, i) => (
-              <div key={i} style={{ display: "flex", gap: 10, fontSize: 12.5, padding: "5px 0", borderBottom: `1px solid ${T.lineSoft}` }}>
-                <span style={{ width: 40, color: T.faint, ...mono }}>M{d.month}</span>
-                <span style={{ width: 70, color: dc(d.type), fontWeight: 600, textTransform: "capitalize" }}>{d.type}{(d.s || d.a) ? ` ${Math.round((d.s || d.a) * 100)}%` : ""}</span>
-                <span style={{ color: T.muted }}>{d.title}</span>
-              </div>
-            ))}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <h3 style={{ margin: 0, fontSize: 14 }}>Decision timeline</h3>
+            <div style={{ display: "flex", gap: 6 }}>
+              <Chip active={timelineView} onClick={() => setTimelineView(true)}>📈 Visual</Chip>
+              <Chip active={!timelineView} onClick={() => setTimelineView(false)}>📋 List</Chip>
+            </div>
           </div>
+          {timelineView ? (
+            <DecisionTimeline decisions={sim.decisions} />
+          ) : (
+            <div style={{ maxHeight: 220, overflowY: "auto" }}>
+              {sim.decisions.length === 0 && <div style={{ color: T.faint, fontSize: 12 }}>No decisions recorded.</div>}
+              {sim.decisions.map((d, i) => (
+                <div key={i} style={{ display: "flex", gap: 10, fontSize: 12.5, padding: "5px 0", borderBottom: `1px solid ${T.lineSoft}` }}>
+                  <span style={{ width: 40, color: T.faint, ...mono }}>M{d.month}</span>
+                  <span style={{ width: 70, color: dc(d.type), fontWeight: 600, textTransform: "capitalize" }}>{d.type}{(d.s || d.a) ? ` ${Math.round((d.s || d.a) * 100)}%` : ""}</span>
+                  <span style={{ color: T.muted }}>{d.title}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </Panel>
 
         <Btn kind="primary" onClick={onRestart} style={{ padding: "11px 18px" }}><Play size={15} /> New run</Btn>
@@ -2135,6 +2317,59 @@ function LeaderboardModal({ onClose, highlightEntry }) {
 }
 
 /* ============================================================
+   QUARTER TIMELINE — replaces the thin progress bar in the header
+   ============================================================ */
+function QuarterTimeline({ sim, nextQ, projScore, blindScore }) {
+  const [hoveredQ, setHoveredQ] = useState(null);
+  const currentQ = Math.floor((sim.month - 1) / 3);  // 0-indexed quarter
+  const nextReleaseQ = (nextQ <= 60) ? Math.floor((nextQ - 1) / 3) : -1;
+
+  return (
+    <div style={{ flex: 1, minWidth: 200 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: T.muted, marginBottom: 5, ...mono }}>
+        <span>Month {sim.month} / 60</span>
+        {!blindScore && <span style={{ color: T.faint }}>proj. {Math.round(projScore)}</span>}
+      </div>
+      <div style={{ display: "flex", gap: 2, position: "relative" }}>
+        {Array.from({ length: 20 }, (_, qi) => {
+          const startM = qi * 3 + 1;
+          const endM   = qi * 3 + 3;
+          const isPast    = qi < currentQ;
+          const isCurrent = qi === currentQ;
+          const isDanger  = qi >= 16;   // Q17–Q20, months 49–60
+          const isRelease = qi === nextReleaseQ;
+          return (
+            <div key={qi}
+              onMouseEnter={() => setHoveredQ(qi)}
+              onMouseLeave={() => setHoveredQ(null)}
+              title={`Q${qi + 1} · M${startM}–${endM}${isDanger ? " · danger zone" : ""}${isRelease ? " · next release" : ""}`}
+              style={{
+                flex: 1, height: 10, borderRadius: 3, cursor: "default", position: "relative",
+                background: isPast ? T.action : isCurrent ? T.action + "bb" : isDanger ? T.expired + "33" : T.panel2,
+                border: `1px solid ${isCurrent ? T.action : isDanger ? T.expired + "55" : T.line}`,
+                opacity: hoveredQ !== null && hoveredQ !== qi ? 0.55 : 1,
+                transition: "opacity .1s",
+              }}
+            >
+              {isCurrent && (
+                <div style={{ position: "absolute", top: -4, left: "50%", transform: "translateX(-50%)", width: 7, height: 7, borderRadius: "50%", background: T.action, border: `2px solid ${T.bg}`, zIndex: 1 }} />
+              )}
+              {isRelease && (
+                <div title="Next quarterly release" style={{ position: "absolute", bottom: -5, left: "50%", transform: "translateX(-50%)", width: 3, height: 4, background: T.completed, borderRadius: 1 }} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 9, color: T.faint }}>
+        <span>Q1</span><span>Q5</span><span>Q10</span><span>Q15</span>
+        <span style={{ color: T.expired + "bb" }}>Q20 ⚠</span>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    PORTFOLIO DASHBOARD — three dial strip above the main grid
    ============================================================ */
 function PortfolioDashboard({ sim }) {
@@ -2157,57 +2392,48 @@ function PortfolioDashboard({ sim }) {
 
   const blind = sim.config?.blindAlignment;
 
+  const KpiCard = ({ icon: Icon, label, bigNum, bigColor, sub, barValue, barColor }) => (
+    <div style={{ flex: 1, padding: "10px 16px", borderRight: `1px solid ${T.line}` }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 6, fontSize: 10.5, fontWeight: 700, color: T.muted, textTransform: "uppercase", letterSpacing: ".05em" }}>
+        <Icon size={12} color={T.action} /> {label}
+      </div>
+      <div style={{ fontSize: 28, fontWeight: 800, color: bigColor, lineHeight: 1, ...mono, marginBottom: 3 }}>{bigNum}</div>
+      <div style={{ fontSize: 11.5, color: T.muted, marginBottom: 6 }}>{sub}</div>
+      <div style={{ height: 4, background: T.panel2, borderRadius: 999 }}>
+        <div style={{ width: `${Math.min(100, barValue * 100).toFixed(1)}%`, height: "100%", background: barColor, borderRadius: 999, transition: "width .4s" }} />
+      </div>
+    </div>
+  );
+
   return (
-    <div style={{
-      display: "grid",
-      gridTemplateColumns: "repeat(3, 1fr)",
-      gap: 12,
-      padding: "12px 16px",
-      borderBottom: `1px solid ${T.line}`,
-      background: T.panel,
-    }}>
-      {/* Dial A — Funding Efficiency */}
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "8px 4px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 4, fontSize: 11.5, fontWeight: 700, color: T.text, textTransform: "uppercase", letterSpacing: ".05em" }}>
-          <Zap size={13} color={T.action} /> Funding Efficiency
-        </div>
-        <Gauge270
-          value={fundingEfficiency}
-          label={`${money(committed)} of ${money(sim.released)}`}
-          color={fundingEfficiency >= 0.8 ? T.completed : fundingEfficiency >= 0.5 ? T.action : T.suspended}
-        />
-        <div style={{ fontSize: 10.5, color: T.muted, marginTop: 2, textAlign: "center" }}>utilisation vs. released budget</div>
-      </div>
-
-      {/* Dial B — Budget-Weighted Strategic Alignment */}
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "8px 4px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 4, fontSize: 11.5, fontWeight: 700, color: T.text, textTransform: "uppercase", letterSpacing: ".05em" }}>
-          <Target size={13} color={T.action} /> Strategic Alignment
-        </div>
-        {blind ? (
-          <div style={{ height: 100, display: "grid", placeItems: "center", color: T.faint, fontSize: 12 }}>Hidden in blind mode</div>
-        ) : (
-          <Gauge270
-            value={weightedAlign}
-            label={inPlay.length ? `${inPlay.length} project${inPlay.length !== 1 ? "s" : ""}` : "No projects yet"}
-            color={weightedAlign >= 0.7 ? T.completed : weightedAlign >= 0.4 ? T.suspended : T.expired}
-          />
-        )}
-        <div style={{ fontSize: 10.5, color: T.muted, marginTop: 2, textAlign: "center" }}>budget-weighted avg (active + completed)</div>
-      </div>
-
-      {/* Dial C — Completed Projects */}
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "8px 4px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 4, fontSize: 11.5, fontWeight: 700, color: T.text, textTransform: "uppercase", letterSpacing: ".05em" }}>
-          <Award size={13} color={T.action} /> Completed
-        </div>
-        <Gauge270
-          value={completedRatio}
-          label={`${completed.length} of ${sim.maxComp} target`}
-          color={completedRatio >= 0.75 ? T.completed : completedRatio >= 0.4 ? T.action : T.suspended}
-        />
-        <div style={{ fontSize: 10.5, color: T.muted, marginTop: 2, textAlign: "center" }}>projects delivered</div>
-      </div>
+    <div style={{ display: "flex", borderBottom: `1px solid ${T.line}`, background: T.panel }}>
+      <KpiCard
+        icon={Zap}
+        label="Funding Efficiency"
+        bigNum={pct(fundingEfficiency)}
+        bigColor={fundingEfficiency >= 0.8 ? T.completed : fundingEfficiency >= 0.5 ? T.action : T.suspended}
+        sub={`${money(committed)} of ${money(sim.released)}`}
+        barValue={fundingEfficiency}
+        barColor={fundingEfficiency >= 0.8 ? T.completed : fundingEfficiency >= 0.5 ? T.action : T.suspended}
+      />
+      <KpiCard
+        icon={Target}
+        label={blind ? "Strategic Alignment (hidden)" : "Strategic Alignment"}
+        bigNum={blind ? "—" : pct(weightedAlign)}
+        bigColor={blind ? T.faint : weightedAlign >= 0.7 ? T.completed : weightedAlign >= 0.4 ? T.suspended : T.expired}
+        sub={inPlay.length ? `${inPlay.length} project${inPlay.length !== 1 ? "s" : ""} · budget-weighted` : "No projects yet"}
+        barValue={blind ? 0 : weightedAlign}
+        barColor={weightedAlign >= 0.7 ? T.completed : weightedAlign >= 0.4 ? T.suspended : T.expired}
+      />
+      <KpiCard
+        icon={Award}
+        label="Completed"
+        bigNum={`${completed.length}/${sim.maxComp}`}
+        bigColor={completedRatio >= 0.75 ? T.completed : completedRatio >= 0.4 ? T.action : T.suspended}
+        sub="projects delivered vs target"
+        barValue={completedRatio}
+        barColor={completedRatio >= 0.75 ? T.completed : completedRatio >= 0.4 ? T.action : T.suspended}
+      />
     </div>
   );
 }
@@ -2234,10 +2460,27 @@ export default function App() {
   const [showHint, setShowHint] = useState(false);
   const [showReport, setShowReport] = useState(false);
   const [previewProject, setPreviewProject] = useState(null);
+  const [showOverflow, setShowOverflow] = useState(false);
+  const [showAdvancePreview, setShowAdvancePreview] = useState(false);
+  const overflowRef = useRef(null);
   applyTheme(theme);                                   // mutate live palette before children render
 
   useEffect(() => { loadSession().then((s) => setHasSave(!!s)); }, []);
-  useEffect(() => { if (toast) { const t = setTimeout(() => setToast(""), 1800); return () => clearTimeout(t); } }, [toast]);
+  useEffect(() => { if (toast) { const t = setTimeout(() => setToast(""), 3500); return () => clearTimeout(t); } }, [toast]);
+  useEffect(() => {
+    if (!showOverflow) return;
+    const h = (e) => { if (overflowRef.current && !overflowRef.current.contains(e.target)) setShowOverflow(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [showOverflow]);
+  // auto-switch right panel to cash flow when risk alerts fire
+  useEffect(() => {
+    if (sim?.alerts?.length > 0) setTab("cash");
+  }, [sim?.alerts?.length]);
+  // auto-switch to cash when previewing a project
+  useEffect(() => {
+    if (previewProject) setTab("cash");
+  }, [previewProject]);
 
   const commit = (mut) => setSim((prev) => { const next = clone(prev); mut(next); return next; });
 
@@ -2255,13 +2498,22 @@ export default function App() {
   };
   const doAdvance = () => {
     setShortfall(false);
-    setSim((prev) => {
-      const next = clone(prev);
-      const rng = mkRng((next.seed + next.month * 2654435761) >>> 0);
-      deductAndProgress(next, rng);
-      saveSession(next);
-      return next;
-    });
+    const next = clone(sim);
+    const prevMonth = next.month;
+    const rng = mkRng((next.seed + next.month * 2654435761) >>> 0);
+    deductAndProgress(next, rng);
+    saveSession(next);
+    setSim(next);
+    // build rich toast summary
+    const h = next.history[next.history.length - 1];
+    const justCompleted = next.projects.filter((p) => p.completionMonth === prevMonth);
+    const wasRelease = ((next.month - 1) % 3 === 0);
+    const qi = Math.floor((next.month - 1) / 3);
+    const parts = [`Month ${prevMonth} complete`, `${money(h?.demand ?? 0)} spent`];
+    if (justCompleted.length) parts.push(`✓ ${justCompleted.map((p) => p.id).join(", ")} delivered`);
+    if (next.alerts.length) parts.push(`⚠ ${next.alerts.length} risk event${next.alerts.length > 1 ? "s" : ""}`);
+    if (wasRelease) parts.push(`Q${qi} released`);
+    setToast(parts.join(" · "));
   };
 
   if (!sim) return <Shell><SetupScreen onStart={start} onResume={resume} hasSave={hasSave} /></Shell>;
@@ -2273,37 +2525,74 @@ export default function App() {
   const suspendedList = sim.projects.filter((p) => p.state === "suspended");
   const pendingList = sim.projects.filter((p) => p.state === "pending");
   const blindScore = sim.config?.blindScore;
+  const demandThisMonth = demandAt(sim, sim.month);
+  const advanceKind = demandThisMonth > sim.availableBalance ? "danger" : demandThisMonth > sim.availableBalance * 0.8 ? "warn" : "primary";
 
   return (
     <Shell>
       {/* header */}
-      <div style={{ position: "sticky", top: 0, zIndex: 20, background: T.bg + "f2", backdropFilter: "blur(6px)", borderBottom: `1px solid ${T.line}`, padding: "12px 18px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+      <div style={{ position: "sticky", top: 0, zIndex: 20, background: T.bg + "f2", backdropFilter: "blur(6px)", borderBottom: `1px solid ${T.line}`, padding: "10px 18px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+          {/* logo + name */}
+          <div style={{ display: "flex", alignItems: "center", gap: 9, flexShrink: 0 }}>
             <Gauge size={20} color={T.action} />
             <strong style={{ fontSize: 15 }}>{sim.name}</strong>
           </div>
-          <div style={{ flex: 1, minWidth: 160 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: T.muted, marginBottom: 3 }}>
-              <span style={mono}>Month {sim.month} / 60</span>
-              <span style={mono}>{blindScore ? "" : `proj. score ${Math.round(live.final)}`}</span>
-            </div>
-            <div style={{ height: 6, background: T.panel2, borderRadius: 999 }}>
-              <div style={{ width: `${(sim.month / 60) * 100}%`, height: "100%", background: T.action, borderRadius: 999, transition: "width .3s" }} />
-            </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          {/* quarter timeline */}
+          <QuarterTimeline sim={sim} nextQ={nextQ} projScore={live.final} blindScore={blindScore} />
+          {/* right actions */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 10.5, color: T.muted, textTransform: "uppercase", letterSpacing: ".05em" }}>Available</div>
+              <div style={{ fontSize: 10, color: T.muted, textTransform: "uppercase", letterSpacing: ".05em" }}>Available</div>
               <div style={{ fontSize: 18, fontWeight: 700, color: T.completed, ...mono }}>{money(sim.availableBalance)}</div>
             </div>
-            <Btn onClick={() => setShowReport(true)} title="Generate portfolio status report" kind="ghost"><FileText size={15} color={T.action} /> Report</Btn>
-            <Btn onClick={() => setShowHint(true)} title="Get a hint" kind="ghost"><Lightbulb size={15} color={T.suspended} /> Hint</Btn>
+            <Btn onClick={() => setShowHint(true)} title="Get a hint"><Lightbulb size={15} color={T.suspended} /> Hint</Btn>
             <Btn onClick={() => setTheme(theme === "light" ? "dark" : "light")} title="Toggle light / dark">
               {theme === "light" ? <Moon size={15} /> : <Sun size={15} />}
             </Btn>
             <Btn onClick={() => { saveSession(sim); setToast("Session saved"); }} title="Save session"><Save size={15} /></Btn>
-            <Btn kind="primary" onClick={tryAdvance} style={{ padding: "9px 16px" }}>Advance <ChevronRight size={16} /></Btn>
+            {/* overflow menu */}
+            <div ref={overflowRef} style={{ position: "relative" }}>
+              <Btn onClick={() => setShowOverflow(!showOverflow)} title="More options"><MoreHorizontal size={15} /></Btn>
+              {showOverflow && (
+                <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 10, boxShadow: T.shadow, zIndex: 30, minWidth: 160, overflow: "hidden" }}>
+                  <button onClick={() => { setShowReport(true); setShowOverflow(false); }}
+                    style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", background: "transparent", border: "none", cursor: "pointer", fontSize: 13, color: T.text, textAlign: "left" }}
+                    onMouseEnter={(e) => e.currentTarget.style.background = T.panel2}
+                    onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
+                    <FileText size={14} color={T.action} /> Status report
+                  </button>
+                </div>
+              )}
+            </div>
+            {/* advance button with hover demand preview */}
+            <div style={{ position: "relative" }}
+              onMouseEnter={() => setShowAdvancePreview(true)}
+              onMouseLeave={() => setShowAdvancePreview(false)}>
+              {showAdvancePreview && (
+                <div style={{ position: "absolute", bottom: "calc(100% + 8px)", right: 0, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 10, padding: "12px 14px", fontSize: 12.5, zIndex: 40, minWidth: 215, boxShadow: T.shadow, pointerEvents: "none" }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", color: T.muted, marginBottom: 8 }}>Month {sim.month} preview</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 16, marginBottom: 4 }}>
+                    <span style={{ color: T.muted }}>Demand</span>
+                    <span style={{ ...mono, color: demandThisMonth > sim.availableBalance ? T.expired : T.text }}>{money(demandThisMonth)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 16, marginBottom: 8 }}>
+                    <span style={{ color: T.muted }}>Available</span>
+                    <span style={{ ...mono, color: T.completed }}>{money(sim.availableBalance)}</span>
+                  </div>
+                  <div style={{ borderTop: `1px solid ${T.line}`, paddingTop: 8, display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ fontWeight: 700, color: T.text }}>Net</span>
+                    <span style={{ ...mono, fontWeight: 700, color: sim.availableBalance - demandThisMonth >= 0 ? T.completed : T.expired }}>
+                      {sim.availableBalance - demandThisMonth >= 0 ? "+" : ""}{money(sim.availableBalance - demandThisMonth)}
+                    </span>
+                  </div>
+                  {nextQ <= 60 && (nextQ - sim.month) >= 1 && (nextQ - sim.month) <= 3 && (
+                    <div style={{ marginTop: 8, fontSize: 11, color: T.completed }}>⚡ Q release in {nextQ - sim.month} month{nextQ - sim.month !== 1 ? "s" : ""} · {money(sim.quarterlyRelease)}</div>
+                  )}
+                </div>
+              )}
+              <Btn kind={advanceKind} onClick={tryAdvance} style={{ padding: "9px 16px" }}>Advance <ChevronRight size={16} /></Btn>
+            </div>
           </div>
         </div>
       </div>
@@ -2313,6 +2602,7 @@ export default function App() {
       <div style={{ display: "grid", gridTemplateColumns: "minmax(340px, 420px) 1fr", gap: 16, padding: 16, alignItems: "start" }} className="sim-grid">
         {/* LEFT — decisions */}
         <div>
+          <QuickAddStrip sim={sim} onAdd={(id) => commit((n) => addProject(n, id))} onPreview={(p) => setPreviewProject(p)} />
           {sim.alerts.length > 0 && (
             <div style={{ marginBottom: 12 }}>
               {sim.alerts.map((a, i) => (
@@ -2367,13 +2657,21 @@ export default function App() {
           <div style={{ display: "flex", borderBottom: `1px solid ${T.line}` }}>
             {TABS.map((t) => {
               const Icon = t.icon;
+              // cash-crunch warning dot: future month where required > available
+              const hasCrunch = t.id === "cash" && (() => {
+                const cf = projectCashflow(sim);
+                return cf.some((row) => !row.actual && row.month > sim.month && row.required > row.available + 1e-6);
+              })();
               return (
                 <button key={t.id} onClick={() => setTab(t.id)} style={{
                   flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
                   padding: "11px 8px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", background: "transparent",
                   border: "none", borderBottom: `2px solid ${tab === t.id ? T.action : "transparent"}`,
-                  color: tab === t.id ? T.text : T.muted,
-                }}><Icon size={14} /> {t.label}</button>
+                  color: tab === t.id ? T.text : T.muted, position: "relative",
+                }}>
+                  <Icon size={14} /> {t.label}
+                  {hasCrunch && <span title="Projected cash shortfall ahead" style={{ position: "absolute", top: 6, right: 6, width: 7, height: 7, borderRadius: "50%", background: T.expired, border: `1.5px solid ${T.panel}` }} />}
+                </button>
               );
             })}
           </div>
