@@ -1231,9 +1231,15 @@ function SetupScreen({ onStart, onResume, hasSave }) {
           <Gauge size={26} color={T.action} />
           <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-.02em", margin: 0 }}>Portfolio Simulator</h1>
         </div>
-        <p style={{ color: T.muted, margin: "0 0 20px", fontSize: 14, lineHeight: 1.5 }}>
+        <p style={{ color: T.muted, margin: "0 0 16px", fontSize: 14, lineHeight: 1.5 }}>
           Sixty months. Thirty candidate projects. Enough budget for roughly twenty. Select, fund, slow, and — when the money runs short — decide what gives.
         </p>
+
+        <img
+          src="/splash.jpg"
+          alt="Portfolio Simulator"
+          style={{ width: "100%", borderRadius: 12, marginBottom: 16, display: "block", objectFit: "cover", maxHeight: 220, border: `1px solid ${T.line}` }}
+        />
 
         <Panel style={{ padding: 22, marginBottom: 14 }}>
           {/* player name + run name */}
