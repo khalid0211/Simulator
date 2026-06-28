@@ -868,105 +868,206 @@ function RulesModal({ onClose }) {
 }
 
 /* ============================================================
-   PORTFOLIO REPORT MODAL — AI-generated PMO narrative
+   PORTFOLIO REPORT MODAL — rule-based PMO narrative (no API required)
    ============================================================ */
-function buildReportPrompt(sim) {
+function generateReport(sim) {
   const completed  = sim.projects.filter((p) => p.state === "completed");
   const active     = sim.projects.filter((p) => p.state === "active");
   const suspended  = sim.projects.filter((p) => p.state === "suspended");
   const abandoned  = sim.projects.filter((p) => p.state === "abandoned");
   const available  = sim.projects.filter((p) => p.state === "available");
-  const live       = (() => { try { const probe = JSON.parse(JSON.stringify(sim)); finalize(probe); return probe.score; } catch { return null; } })();
+  const live       = liveScore(sim);
   const mr         = sim.monthlyRate;
+  const remaining  = 61 - sim.month;
+  const deployed   = sim.released - sim.availableBalance;
+  const deployRate = sim.released > 0 ? deployed / sim.released : 0;
+  const decisions  = sim.decisions || [];
+  const atRisk     = active.filter((p) => (p.startMonth + (p.durationCurrent || 0)) > 60);
+  const nearExpiry = active.filter((p) => { const e = p.startMonth + (p.durationCurrent || 0); return e > 57 && e <= 60; });
+  const highBurn   = active.filter((p) => (p.sCurve[0] || 0) * inflator(mr, sim.month) > sim.availableBalance * 0.25);
 
-  const fmtProject = (p) => {
-    const pct = (n) => (n * 100).toFixed(0) + "%";
-    const prog = p.bacCurrent ? (p.nominalSpent / p.bacCurrent * 100).toFixed(0) + "%" : "—";
-    const end  = p.state === "completed" ? `completed M${p.completionMonth}` : p.startMonth ? `ends ~M${p.startMonth + (p.durationCurrent || 0)}` : "";
-    return `  • ${p.id} "${p.title}" | alignment ${pct(p.alignment)} | BAC $${p.bacCurrent?.toFixed(2) || p.bacInitial.toFixed(2)}M | progress ${prog} | ${end}`;
-  };
+  const activeBudgetWeightedAlign = (() => {
+    const pool = [...active, ...completed];
+    const totalBac = pool.reduce((a, p) => a + (p.bacCurrent || p.bacInitial), 0);
+    return totalBac > 0 ? pool.reduce((a, p) => a + p.alignment * (p.bacCurrent || p.bacInitial), 0) / totalBac : 0;
+  })();
+  const completedAvgAlign = completed.length ? completed.reduce((a, p) => a + p.alignment, 0) / completed.length : 0;
+  const poolAvgAlign = sim.projects.reduce((a, p) => a + p.alignment, 0) / sim.projects.length;
 
-  return `You are writing a formal Portfolio Status Report for a government portfolio manager.
-The simulation is at Month ${sim.month} of 60. Write a structured, authoritative report in the style of a Programme Management Office (PMO) Status Report.
+  const sunkCost   = abandoned.reduce((a, p) => a + p.cashDrawn, 0);
+  const abandonPenalty = abandoned.length * 2;
+  const topAvailable = [...available].sort((a, b) => b.alignment - a.alignment)
+    .filter((p) => p.durationPlanned <= remaining)
+    .slice(0, 3);
 
-PORTFOLIO SNAPSHOT
-==================
-Run name: ${sim.name || "Untitled"}
-Inflation rate: ${(sim.annualRate * 100).toFixed(1)}% p.a.
-Month: ${sim.month} / 60 (${61 - sim.month} months remaining)
-Total budget: $${sim.totalBudget.toFixed(2)}M
-Released to date: $${sim.released.toFixed(2)}M
-Available balance: $${sim.availableBalance.toFixed(2)}M
-Budget deployed: $${(sim.released - sim.availableBalance).toFixed(2)}M (${(sim.released > 0 ? (1 - sim.availableBalance / sim.released) * 100 : 0).toFixed(0)}% of released)
-Max possible completions: ${sim.maxComp}
+  // helpers
+  const fp = (p) => `${p.id} "${p.title}"`;
+  const al = (p) => `${(p.alignment * 100).toFixed(0)}%`;
+  const pr = (p) => p.bacCurrent ? `${(p.nominalSpent / p.bacCurrent * 100).toFixed(0)}% complete` : "—";
+  const pe = (p) => `ends M${p.startMonth + (p.durationCurrent || 0)}`;
 
-ACTIVE PROJECTS (${active.length})
-${active.map(fmtProject).join("\n") || "  None"}
+  // ── Section 1: Executive Summary ────────────────────────────────────────────
+  const healthLabel = live.final >= 70 ? "on track" : live.final >= 40 ? "under pressure" : "in distress";
+  const trajectoryNote = atRisk.length
+    ? `${atRisk.length} active project${atRisk.length > 1 ? "s are" : " is"} currently projected to exceed the Month 60 boundary and will expire unless corrective action is taken.`
+    : nearExpiry.length
+    ? `${nearExpiry.length} project${nearExpiry.length > 1 ? "s are" : " is"} approaching the Month 60 limit and require monitoring.`
+    : "No active projects are currently at risk of expiry.";
 
-COMPLETED PROJECTS (${completed.length})
-${completed.map(fmtProject).join("\n") || "  None"}
+  const s1 = [
+    `The portfolio is ${healthLabel} at Month ${sim.month} of 60, with a projected composite score of ${live.final.toFixed(1)}/100 (${live.band}).`,
+    `${completed.length} of ${sim.maxComp} target projects have been delivered; ${active.length} are active and ${suspended.length} are suspended.`,
+    `${(deployRate * 100).toFixed(0)}% of released funding ($${deployed.toFixed(2)}M of $${sim.released.toFixed(2)}M) has been deployed. Available balance stands at $${sim.availableBalance.toFixed(2)}M.`,
+    trajectoryNote,
+  ].join(" ");
 
-SUSPENDED PROJECTS (${suspended.length})
-${suspended.map(fmtProject).join("\n") || "  None"}
+  // ── Section 2: Financial Position ───────────────────────────────────────────
+  const inflationNote = available.length
+    ? `The ${available.length}-project available pool continues to inflate at ${(sim.annualRate * 100).toFixed(1)}% p.a., raising the cost of future project additions by approximately $${(available.reduce((a, p) => a + p.bacInitial, 0) * (sim.monthlyRate)).toFixed(2)}M per month.`
+    : "The available pool is now empty; inflation exposure from unstarted projects has been eliminated.";
+  const cashNote = sim.availableBalance < 0
+    ? "A cash shortfall has occurred this month. Immediate remediation is required."
+    : sim.availableBalance < sim.quarterlyRelease * 0.5
+    ? "Available balance is below half a quarterly release — a shortfall is likely before the next tranche unless demand is reduced."
+    : "Cash position is adequate relative to the next quarterly release.";
+  const unspentNote = sim.availableBalance > sim.totalBudget * 0.15
+    ? `Unspent balance ($${sim.availableBalance.toFixed(2)}M) represents ${(sim.availableBalance / sim.totalBudget * 100).toFixed(0)}% of total budget and is penalised in the Budget Efficiency score. Deployment of surplus funds into high-alignment projects is warranted.`
+    : "";
 
-ABANDONED PROJECTS (${abandoned.length})
-${abandoned.map((p) => `  • ${p.id} "${p.title}" | sunk $${p.cashDrawn.toFixed(2)}M`).join("\n") || "  None"}
+  const s2 = [
+    `Budget deployment rate: ${(deployRate * 100).toFixed(0)}% of released funds ($${deployed.toFixed(2)}M spent from $${sim.released.toFixed(2)}M released; total programme budget $${sim.totalBudget.toFixed(2)}M).`,
+    inflationNote,
+    cashNote,
+    unspentNote,
+    sunkCost > 0 ? `Sunk costs from ${abandoned.length} abandoned project${abandoned.length > 1 ? "s" : ""} total $${sunkCost.toFixed(2)}M — these funds are irrecoverable and reduce Budget Efficiency.` : "",
+  ].filter(Boolean).join(" ");
 
-AVAILABLE POOL (${available.length} unstarted)
-Top 5 by alignment: ${available.sort((a, b) => b.alignment - a.alignment).slice(0, 5).map((p) => `${p.id} (${(p.alignment * 100).toFixed(0)}%, $${(p.bacInitial * Math.pow(1 + mr, sim.month)).toFixed(2)}M, ${p.durationPlanned}m)`).join("; ")}
+  // ── Section 3: Project Portfolio Status ─────────────────────────────────────
+  const activeNarrative = active.length
+    ? `Active portfolio (${active.length} projects): ${active.map((p) => `${fp(p)} [${al(p)} alignment, ${pr(p)}, ${pe(p)}]`).join("; ")}.`
+    : "No projects are currently active.";
+  const completedNarrative = completed.length
+    ? `Completed (${completed.length}): ${completed.map((p) => `${fp(p)} [delivered M${p.completionMonth}, ${al(p)} alignment]`).join("; ")}.`
+    : "No projects have been completed to date.";
+  const suspendedNarrative = suspended.length
+    ? `Suspended (${suspended.length}): ${suspended.map((p) => fp(p)).join(", ")} — remaining costs continue to inflate while on hold.`
+    : "No projects are currently suspended.";
+  const abandonedNarrative = abandoned.length
+    ? `Abandoned (${abandoned.length}): ${abandoned.map((p) => `${fp(p)} [sunk $${p.cashDrawn.toFixed(2)}M]`).join("; ")} — incurring ${abandonPenalty}-point score penalty.`
+    : "No projects have been abandoned.";
 
-RISK EVENTS TRIGGERED: ${sim.events.length}
-${sim.events.slice(-5).map((e) => `  • M${e.month} ${e.id} at ${e.milestone}% — cost ${e.costDelta ? (e.costDelta > 0 ? "+" : "") + (e.costDelta * 100).toFixed(0) + "%" : "unchanged"}, duration ${e.durDelta ? (e.durDelta > 0 ? "+" : "") + (e.durDelta * 100).toFixed(0) + "%" : "unchanged"}`).join("\n") || "  None yet"}
+  const s3 = [activeNarrative, completedNarrative, suspendedNarrative, abandonedNarrative].join("\n");
 
-DECISIONS TAKEN: ${sim.decisions.length}
-${sim.decisions.slice(-8).map((d) => `  • M${d.month} ${d.type.toUpperCase()} ${d.id} "${d.title}"${d.s ? " slow " + (d.s * 100).toFixed(0) + "%" : ""}${d.a ? " speed " + (d.a * 100).toFixed(0) + "%" : ""}`).join("\n") || "  None yet"}
+  // ── Section 4: Strategic Alignment Analysis ──────────────────────────────────
+  const highAlign = active.filter((p) => p.alignment >= 0.7);
+  const lowAlign  = active.filter((p) => p.alignment < 0.4);
+  const alignNote = activeBudgetWeightedAlign >= 0.7
+    ? "The active portfolio is strongly aligned with strategic objectives."
+    : activeBudgetWeightedAlign >= 0.5
+    ? "Portfolio alignment is moderate — there is room to improve strategic fit by prioritising higher-alignment additions."
+    : "Portfolio strategic alignment is weak. Lower-alignment projects are consuming a disproportionate share of the budget.";
+  const lowAlignNote = lowAlign.length
+    ? ` Low-alignment projects still active — ${lowAlign.map(fp).join(", ")} — should be reviewed for suspension or abandonment if budget pressure intensifies.`
+    : "";
+  const completedAlignNote = completed.length
+    ? ` Delivered projects average ${(completedAvgAlign * 100).toFixed(0)}% alignment against a pool average of ${(poolAvgAlign * 100).toFixed(0)}%.`
+    : "";
 
-PROJECTED SCORE (current trajectory)
-${live ? `  Delivery ${live.delivery.toFixed(1)}/40 | Alignment ${live.alignment.toFixed(1)}/35 | Efficiency ${live.efficiency.toFixed(1)}/25 | Penalties −${live.penalty} | Final ${live.final.toFixed(1)}/100 (${live.band})` : "  Not yet available"}
+  const s4 = `Budget-weighted strategic alignment of the active and completed portfolio: ${(activeBudgetWeightedAlign * 100).toFixed(0)}% (pool average: ${(poolAvgAlign * 100).toFixed(0)}%). ${alignNote}${lowAlignNote}${completedAlignNote}`;
 
-Write the report with the following sections. Use clear headings. Be specific — name actual projects by ID and title. Be direct about weaknesses.
+  // ── Section 5: Risk Profile ───────────────────────────────────────────────────
+  const recentEvents = sim.events.slice(-5);
+  const riskSummary = sim.events.length === 0
+    ? "No risk events have been triggered to date."
+    : `${sim.events.length} risk event${sim.events.length > 1 ? "s have" : " has"} been triggered across the programme. Recent events: ${recentEvents.map((e) => `${e.id} at ${e.milestone}% milestone (M${e.month}): cost ${e.costDelta ? (e.costDelta > 0 ? "+" : "") + (e.costDelta * 100).toFixed(0) + "%" : "unchanged"}, duration ${e.durDelta ? (e.durDelta > 0 ? "+" : "") + (e.durDelta * 100).toFixed(0) + "%" : "unchanged"}`).join("; ")}.`;
+  const expiryRisk = atRisk.length
+    ? ` Projects at imminent expiry risk (projected end > Month 60): ${atRisk.map((p) => `${fp(p)} [${pe(p)}]`).join(", ")}.`
+    : " No projects are currently projected to exceed the Month 60 boundary.";
+  const burnRisk = highBurn.length
+    ? ` High monthly burn relative to available balance: ${highBurn.map(fp).join(", ")}.`
+    : "";
 
-1. EXECUTIVE SUMMARY (3–4 sentences covering overall health, financial position, and trajectory)
-2. FINANCIAL POSITION (budget deployment rate, inflation exposure, cash flow outlook)
-3. PROJECT PORTFOLIO STATUS (brief narrative on each state group — active, completed, suspended, abandoned)
-4. STRATEGIC ALIGNMENT ANALYSIS (is the portfolio aligned with strategic objectives? which active projects are high/low value?)
-5. RISK PROFILE (risk events to date, projects at risk of expiry or cost overrun)
-6. PORTFOLIO MANAGER ASSESSMENT (frank assessment of decisions made so far — what has been done well, what needs correction)
-7. RECOMMENDED ACTIONS (3–5 specific, prioritised actions for the next 5 months, naming project IDs)
+  const s5 = riskSummary + expiryRisk + burnRisk;
 
-Tone: formal, analytical, frank. Third person. No filler phrases. Approximately 500–650 words total.`;
-}
+  // ── Section 6: Portfolio Manager Assessment ──────────────────────────────────
+  const adds    = decisions.filter((d) => d.type === "add").length;
+  const slows   = decisions.filter((d) => d.type === "slow").length;
+  const speeds  = decisions.filter((d) => d.type === "speed").length;
+  const suspends= decisions.filter((d) => d.type === "suspend").length;
+  const abandons= decisions.filter((d) => d.type === "abandon").length;
+  const earlyAdds = decisions.filter((d) => d.type === "add" && d.month <= 15).length;
 
-async function generateReport(sim) {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1000,
-      messages: [{ role: "user", content: buildReportPrompt(sim) }],
-    }),
+  const positives = [];
+  const concerns  = [];
+
+  if (completed.length >= sim.maxComp * 0.7) positives.push(`strong delivery rate (${completed.length}/${sim.maxComp} projects)`);
+  if (completedAvgAlign >= poolAvgAlign) positives.push(`above-average alignment in completed projects (${(completedAvgAlign * 100).toFixed(0)}% vs pool average ${(poolAvgAlign * 100).toFixed(0)}%)`);
+  if (earlyAdds >= 3) positives.push(`proactive project selection in the early game (${earlyAdds} projects added before Month 15)`);
+  if (slows >= 2 && abandoned.length === 0) positives.push("effective use of Slow Down to manage cash flow without abandonment");
+  if (abandoned.length === 0) positives.push("no project abandonments — sunk cost discipline maintained");
+  if (deployRate >= 0.75) positives.push(`high budget utilisation (${(deployRate * 100).toFixed(0)}% of released funds deployed)`);
+
+  if (abandoned.length > 2) concerns.push(`excessive abandonment (${abandoned.length} projects, ${abandonPenalty}-point penalty) — each abandonment after 40% completion destroys more value than it saves`);
+  if (atRisk.length > 0) concerns.push(`${atRisk.length} active project${atRisk.length > 1 ? "s" : ""} will expire without corrective action`);
+  if (sim.availableBalance > sim.totalBudget * 0.15) concerns.push(`large undeployed balance ($${sim.availableBalance.toFixed(2)}M) is depressing Budget Efficiency`);
+  if (completedAvgAlign < poolAvgAlign - 0.1) concerns.push(`completed projects average ${(completedAvgAlign * 100).toFixed(0)}% alignment — below the pool mean, suggesting suboptimal project selection`);
+  if (speeds > slows + abandons && speeds > 2) concerns.push("over-reliance on Speed Up is generating unnecessary crash premiums");
+  if (earlyAdds === 0 && sim.month > 10) concerns.push("slow start — no projects added in the first 15 months means inflation has eroded purchasing power");
+
+  const positiveText = positives.length
+    ? `Strengths observed: ${positives.join("; ")}.`
+    : "No clear strengths have been established yet.";
+  const concernText = concerns.length
+    ? ` Areas requiring attention: ${concerns.join("; ")}.`
+    : " No significant concerns at this stage.";
+
+  const s6 = `${decisions.length} decisions have been recorded (${adds} additions, ${slows} slow-downs, ${speeds} speed-ups, ${suspends} suspensions, ${abandons} abandonments). ${positiveText}${concernText}`;
+
+  // ── Section 7: Recommended Actions ───────────────────────────────────────────
+  const actions = [];
+
+  atRisk.forEach((p) => {
+    const prog = p.bacCurrent ? p.nominalSpent / p.bacCurrent : 0;
+    if (prog > 0.6) actions.push(`Speed up ${fp(p)} (${(prog * 100).toFixed(0)}% complete, ${pe(p)}) — project is past 60% and the completion credit outweighs the crash premium.`);
+    else actions.push(`Evaluate ${fp(p)} (${pe(p)}) — consider suspension to avoid the −1 expiry penalty if completion before Month 60 is not achievable.`);
   });
-  if (!response.ok) throw new Error(`API error ${response.status}`);
-  const data = await response.json();
-  return data.content?.find((b) => b.type === "text")?.text || "No report generated.";
+
+  if (sim.availableBalance > sim.totalBudget * 0.12 && topAvailable.length > 0 && remaining > 24) {
+    topAvailable.slice(0, 2).forEach((p) => {
+      actions.push(`Add ${fp(p)} (${al(p)} alignment, $${(p.bacInitial * inflator(mr, sim.month)).toFixed(2)}M, ${p.durationPlanned}m duration) — affordable, completable, and above the portfolio alignment average.`);
+    });
+  }
+
+  if (highBurn.length > 0 && sim.availableBalance < sim.quarterlyRelease * 0.7) {
+    actions.push(`Slow down ${highBurn.map(fp).join(" and ")} to reduce monthly demand and avoid a shortfall before the next quarterly release.`);
+  }
+
+  suspended.forEach((p) => {
+    const canFinish = (sim.month + (p.durationCurrent || 12) * 1.1) <= 60;
+    if (canFinish && sim.availableBalance > (p.bacCurrent - p.nominalSpent) * 0.3) {
+      actions.push(`Resume ${fp(p)} — resumption with the 10% duration penalty still allows completion before Month 60 and avoids further inflation on the remaining cost.`);
+    }
+  });
+
+  if (actions.length === 0) actions.push("Maintain current trajectory. Continue monitoring the Cash Flow tab before each monthly advance and revisit project selection if the available balance grows beyond 15% of total budget.");
+
+  const s7 = actions.slice(0, 5).map((a, i) => `${i + 1}. ${a}`).join("\n");
+
+  // ── Assemble report ───────────────────────────────────────────────────────────
+  return [
+    `1. EXECUTIVE SUMMARY\n${s1}`,
+    `2. FINANCIAL POSITION\n${s2}`,
+    `3. PROJECT PORTFOLIO STATUS\n${s3}`,
+    `4. STRATEGIC ALIGNMENT ANALYSIS\n${s4}`,
+    `5. RISK PROFILE\n${s5}`,
+    `6. PORTFOLIO MANAGER ASSESSMENT\n${s6}`,
+    `7. RECOMMENDED ACTIONS\n${s7}`,
+  ].join("\n\n");
 }
 
 function PortfolioReportModal({ sim, onClose }) {
-  const [status, setStatus] = useState("idle"); // idle | loading | done | error
-  const [report, setReport] = useState("");
+  const report = useMemo(() => generateReport(sim), [sim]);
   const scrollRef = useRef(null);
-
-  useEffect(() => {
-    setStatus("loading");
-    generateReport(sim)
-      .then((text) => { setReport(text); setStatus("done"); })
-      .catch(() => setStatus("error"));
-  }, []);
-
-  useEffect(() => {
-    if (status === "done" && scrollRef.current) scrollRef.current.scrollTop = 0;
-  }, [status]);
 
   const live = useMemo(() => liveScore(sim), [sim]);
 
@@ -988,31 +1089,28 @@ function PortfolioReportModal({ sim, onClose }) {
 
         {/* body */}
         <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
-          {status === "loading" && (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 260, gap: 14, color: T.muted }}>
-              <Loader size={28} color={T.action} style={{ animation: "spin 1s linear infinite" }} />
-              <div style={{ fontSize: 13 }}>Generating portfolio assessment…</div>
-              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-            </div>
-          )}
-          {status === "error" && (
-            <div style={{ textAlign: "center", padding: 40, color: T.expired }}>
-              <AlertTriangle size={28} style={{ marginBottom: 10 }} />
-              <div style={{ fontSize: 14 }}>Report generation failed. Check your connection and try again.</div>
-              <Btn style={{ marginTop: 16 }} onClick={onClose}>Close</Btn>
-            </div>
-          )}
-          {status === "done" && (
-            <div style={{ fontSize: 13.5, lineHeight: 1.75, color: T.text, whiteSpace: "pre-wrap", fontFamily: "Georgia, 'Times New Roman', serif" }}>
-              {report.split(/\n(?=\d+\.|[A-Z ]{4,}$)/m).map((block, i) => {
-                const isHeading = /^[A-Z][A-Z\s]{3,}$/.test(block.trim().split("\n")[0]);
+          <div style={{ fontSize: 13.5, lineHeight: 1.75, color: T.text, fontFamily: "Georgia, 'Times New Roman', serif" }}>
+              {report.split("\n\n").map((block, i) => {
+                const lines = block.split("\n");
+                const isSection = /^\d+\.\s[A-Z]/.test(lines[0]);
                 return (
-                  <div key={i} style={{ marginBottom: isHeading ? 4 : 14 }}>
-                    {block.split("\n").map((line, j) => {
-                      const heading = /^[A-Z][A-Z\s]{3,}$/.test(line.trim()) || /^\d+\.\s[A-Z]/.test(line.trim());
+                  <div key={i} style={{ marginBottom: 20 }}>
+                    {lines.map((line, j) => {
+                      const isHeading = j === 0 && isSection;
+                      const isNumbered = /^\d+\.\s/.test(line) && !isSection;
                       return (
-                        <div key={j} style={{ fontWeight: heading ? 700 : 400, fontSize: heading ? 13 : 13.5, color: heading ? T.action : T.text, textTransform: heading ? "uppercase" : "none", letterSpacing: heading ? ".06em" : 0, marginTop: heading ? 18 : 0, fontFamily: heading ? "ui-sans-serif, system-ui, sans-serif" : "Georgia, serif" }}>
-                          {line || "\u00A0"}
+                        <div key={j} style={{
+                          fontWeight: isHeading ? 700 : 400,
+                          fontSize: isHeading ? 12.5 : 13.5,
+                          color: isHeading ? T.action : T.text,
+                          textTransform: isHeading ? "uppercase" : "none",
+                          letterSpacing: isHeading ? ".07em" : 0,
+                          marginTop: isHeading ? 0 : isNumbered ? 6 : 0,
+                          fontFamily: isHeading ? "ui-sans-serif, system-ui, sans-serif" : "Georgia, serif",
+                          paddingBottom: isHeading ? 6 : 0,
+                          borderBottom: isHeading ? `1px solid ${T.lineSoft}` : "none",
+                        }}>
+                          {line || " "}
                         </div>
                       );
                     })}
@@ -1020,16 +1118,13 @@ function PortfolioReportModal({ sim, onClose }) {
                 );
               })}
             </div>
-          )}
         </div>
 
         {/* footer */}
-        {status === "done" && (
-          <div style={{ padding: "12px 22px", borderTop: `1px solid ${T.line}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
-            <span style={{ fontSize: 11, color: T.faint }}>AI-generated report · for training purposes only</span>
-            <Btn onClick={onClose}>Close</Btn>
-          </div>
-        )}
+        <div style={{ padding: "12px 22px", borderTop: `1px solid ${T.line}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+          <span style={{ fontSize: 11, color: T.faint }}>Rule-based PMO report · generated from simulation data</span>
+          <Btn onClick={onClose}>Close</Btn>
+        </div>
       </div>
     </div>
   );
