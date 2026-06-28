@@ -109,8 +109,7 @@ function maxCompletions(projects, totalBudget) {
 }
 
 /* ---- release schedule (20 quarters) ---- */
-function computeReleaseSchedule(totalBudget, profile, rng2) {
-  const N = 20;
+function computeReleaseSchedule(totalBudget, profile, rng2, N = 20) {
   const norm = (w) => { const s = w.reduce((a, b) => a + b, 0); return w.map((v) => +(v * totalBudget / s).toFixed(4)); };
   if (profile === "scurve") {
     const w = Array.from({ length: N }, (_, i) => betaCDF((i + 1) / N) - betaCDF(i / N));
@@ -139,6 +138,7 @@ function newSim(cfg) {
     riskMultiplier = 1.0,
     blindAlignment = false,
     blindScore = false,
+    fundingFrequency = 3,
   } = cfg;
   const seed = Math.floor(Math.random() * 1e9);
   const rng = mkRng(seed);
@@ -149,7 +149,8 @@ function newSim(cfg) {
     p.durRisk  = Math.min(0.40, +(p.durRisk  * riskMultiplier).toFixed(3));
   });
   const totalBudget = +(projects.reduce((a, p) => a + p.bacInitial, 0) / budgetTightness).toFixed(2);
-  const releaseSchedule = computeReleaseSchedule(totalBudget, fundingProfile, rng);
+  const N = Math.round(60 / fundingFrequency);
+  const releaseSchedule = computeReleaseSchedule(totalBudget, fundingProfile, rng, N);
   const monthlyRate = Math.pow(1 + annualRate, 1 / 12) - 1;
   // force political projects into portfolio at start (lowest alignment, cannot abandon before M24)
   if (politicalProjects > 0) {
@@ -181,7 +182,7 @@ function newSim(cfg) {
     projects,
     events: [], decisions: [], alerts: [], history: [],
     status: "running",
-    config: { fundingProfile, budgetTightness, politicalProjects, concurrentCap, approvalLag, riskMultiplier, blindAlignment, blindScore, preset },
+    config: { fundingProfile, fundingFrequency, budgetTightness, politicalProjects, concurrentCap, approvalLag, riskMultiplier, blindAlignment, blindScore, preset },
   };
   return sim;
 }
@@ -322,8 +323,9 @@ function deductAndProgress(sim, rng) {
   // roll to next month
   sim.month = m + 1;
   if (sim.month <= 60) {
-    if ((sim.month - 1) % 3 === 0) {
-      const qi = Math.floor((sim.month - 1) / 3);
+    const freq = sim.config?.fundingFrequency ?? 3;
+    if ((sim.month - 1) % freq === 0) {
+      const qi = Math.floor((sim.month - 1) / freq);
       const release = sim.releaseSchedule?.[qi] ?? sim.quarterlyRelease;
       sim.quarterlyRelease = release;             // keep display compat
       sim.availableBalance = +(sim.availableBalance + release).toFixed(6);
@@ -1144,6 +1146,8 @@ const TIGHTNESS_LABELS = { 1.2: "Generous (1.2×) — ~25 possible", 1.5: "Stand
 const CAP_LABELS = { 0: "Unconstrained", 5: "Tight — 5 projects", 8: "Moderate — 8 projects", 12: "Relaxed — 12 projects" };
 const LAG_LABELS = { 0: "None (starts next month)", 2: "Short — 2 months", 4: "Realistic — 4 months", 6: "Bureaucratic — 6 months" };
 const RISK_LABELS = { 0.5: "Calm (0.5×)", 1.0: "Normal (1.0×)", 1.5: "Turbulent (1.5×)" };
+const FREQ_LABELS  = { 1: "Monthly (60 tranches)", 3: "Quarterly (20 tranches)", 6: "Bi-annually (10 tranches)", 12: "Annually (5 tranches)" };
+const FREQ_SHORT   = { 1: "Monthly", 3: "Quarterly", 6: "Bi-annual", 12: "Annual" };
 const VIS_LABELS = {
   "full":          "Full transparency",
   "blind_align":   "Blind alignment (scores hidden)",
@@ -1186,6 +1190,7 @@ function SetupScreen({ onStart, onResume, hasSave }) {
   const [approvalLag,      setApprovalLag]      = useState("0");
   const [riskMultiplier,   setRiskMultiplier]   = useState("1.0");
   const [visibility,       setVisibility]       = useState("full");
+  const [fundingFrequency, setFundingFrequency] = useState("3");
 
   const applyPreset = (p) => {
     setPreset(p);
@@ -1215,6 +1220,7 @@ function SetupScreen({ onStart, onResume, hasSave }) {
     riskMultiplier: parseFloat(riskMultiplier),
     blindAlignment: visibility === "blind_align" || visibility === "full_blind",
     blindScore: visibility === "blind_score" || visibility === "full_blind",
+    fundingFrequency: parseInt(fundingFrequency),
   });
 
   const PRESETS = [
@@ -1281,9 +1287,10 @@ function SetupScreen({ onStart, onResume, hasSave }) {
                   </label>
                   <input type="range" min={0} max={20} step={0.5} value={annualRate} onChange={(e) => setAnnualRate(+e.target.value)}
                     style={{ width: "100%", marginBottom: 16, accentColor: T.action }} />
-                  <SelectRow label="Funding profile"  value={fundingProfile}  onChange={setFundingProfile}  options={FUNDING_LABELS} />
-                  <SelectRow label="Budget tightness" value={budgetTightness} onChange={setBudgetTightness} options={TIGHTNESS_LABELS} />
-                  <SelectRow label="Risk environment" value={riskMultiplier}  onChange={setRiskMultiplier}  options={RISK_LABELS} />
+                  <SelectRow label="Funding profile"    value={fundingProfile}    onChange={setFundingProfile}    options={FUNDING_LABELS} />
+                  <SelectRow label="Funding frequency"  value={fundingFrequency}  onChange={setFundingFrequency}  options={FREQ_LABELS} />
+                  <SelectRow label="Budget tightness"   value={budgetTightness}   onChange={setBudgetTightness}   options={TIGHTNESS_LABELS} />
+                  <SelectRow label="Risk environment"   value={riskMultiplier}    onChange={setRiskMultiplier}    options={RISK_LABELS} />
                 </div>
                 {/* col 2 */}
                 <div>
@@ -1333,10 +1340,11 @@ function SetupScreen({ onStart, onResume, hasSave }) {
         </Panel>
 
         {/* summary of active settings */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 8 }}>
           {[
             ["Inflation", annualRate.toFixed(1) + "%"],
             ["Funding", FUNDING_LABELS[fundingProfile]?.split(" ")[0]],
+            ["Cadence", FREQ_SHORT[fundingFrequency] ?? "Quarterly"],
             ["Political", politicalProjects + " forced"],
             ["Risk", RISK_LABELS[riskMultiplier]?.split(" ")[0]],
           ].map(([l, v]) => (
@@ -1890,8 +1898,9 @@ function projectCashflow(sim) {
       const h = byMonth[m];
       series.push({ month: m, required: h ? h.demand : 0, available: h ? h.balanceAfter + h.demand : null, actual: true });
     } else {
-      if (m > probe.month && (m - 1) % 3 === 0) {
-        const qi = Math.floor((m - 1) / 3);
+      const pfreq = probe.config?.fundingFrequency ?? 3;
+      if (m > probe.month && (m - 1) % pfreq === 0) {
+        const qi = Math.floor((m - 1) / pfreq);
         bal += probe.releaseSchedule?.[qi] ?? probe.quarterlyRelease;
       }
       const req = actives(probe).reduce((a, p) => a + (p.sCurve[m - probe.month] || 0) * inflator(probe.monthlyRate, m), 0);
@@ -2429,7 +2438,8 @@ function LeaderboardModal({ onClose, highlightEntry }) {
 function QuarterTimeline({ sim, nextQ, projScore, blindScore }) {
   const [hoveredQ, setHoveredQ] = useState(null);
   const currentQ = Math.floor((sim.month - 1) / 3);  // 0-indexed quarter
-  const nextReleaseQ = (nextQ <= 60) ? Math.floor((nextQ - 1) / 3) : -1;
+  const tfreq = sim.config?.fundingFrequency ?? 3;
+  const nextReleaseQ = (nextQ <= 60) ? Math.floor((nextQ - 1) / tfreq) : -1;
 
   return (
     <div style={{ flex: 1, minWidth: 200 }}>
@@ -2627,7 +2637,8 @@ export default function App() {
   if (sim.status === "ended") return <Shell><Debrief sim={sim} onRestart={() => { setSim(null); loadSession().then((s) => setHasSave(!!s)); }} /></Shell>;
 
   const live = liveScore(sim);
-  const nextQ = sim.month + ((3 - ((sim.month - 1) % 3)) % 3 || 3);
+  const simFreq = sim.config?.fundingFrequency ?? 3;
+  const nextQ = sim.month + ((simFreq - ((sim.month - 1) % simFreq)) % simFreq || simFreq);
   const activeList = actives(sim);
   const suspendedList = sim.projects.filter((p) => p.state === "suspended");
   const pendingList = sim.projects.filter((p) => p.state === "pending");
@@ -2694,7 +2705,7 @@ export default function App() {
                     </span>
                   </div>
                   {nextQ <= 60 && (nextQ - sim.month) >= 1 && (nextQ - sim.month) <= 3 && (
-                    <div style={{ marginTop: 8, fontSize: 11, color: T.completed }}>⚡ Q release in {nextQ - sim.month} month{nextQ - sim.month !== 1 ? "s" : ""} · {money(sim.quarterlyRelease)}</div>
+                    <div style={{ marginTop: 8, fontSize: 11, color: T.completed }}>⚡ {FREQ_SHORT[simFreq] ?? "Q"} release in {nextQ - sim.month} month{nextQ - sim.month !== 1 ? "s" : ""} · {money(sim.quarterlyRelease)}</div>
                   )}
                 </div>
               )}
@@ -2784,7 +2795,7 @@ export default function App() {
           </div>
           <div style={{ padding: 16 }}>
             <div style={{ fontSize: 11, color: T.faint, marginBottom: 10 }}>
-              Next quarterly release: Month {nextQ <= 60 ? nextQ : "—"} · {money(sim.quarterlyRelease)}
+              Next {FREQ_SHORT[simFreq]?.toLowerCase() ?? "quarterly"} release: Month {nextQ <= 60 ? nextQ : "—"} · {money(sim.quarterlyRelease)}
             </div>
             {tab === "cash" && <CashFlowTab sim={sim} />}
             {tab === "gantt" && <GanttTab sim={sim} />}
