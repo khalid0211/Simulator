@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ReferenceLine, ResponsiveContainer,
 } from "recharts";
 import {
@@ -1595,15 +1595,12 @@ function QuickAddStrip({ sim, onAdd, onPreview }) {
     .sort((a, b) => b.alignment - a.alignment)
     .slice(0, 3);
 
-  if (!candidates.length) return null;
-
   const alignColor = (a) => a >= 0.7 ? T.completed : a >= 0.4 ? T.suspended : T.expired;
 
+  if (!candidates.length) return <Empty msg="No affordable, finishable projects available." />;
+
   return (
-    <div style={{ marginBottom: 12 }}>
-      <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".06em", color: T.muted, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
-        <Zap size={12} color={T.action} /> Top picks — affordable &amp; finishable
-      </div>
+    <div style={{ marginBottom: 4 }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
         {candidates.map((p) => (
           <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, padding: "6px 10px" }}>
@@ -1914,7 +1911,7 @@ function projectCashflow(sim) {
 function CashFlowTab({ sim }) {
   const data = useMemo(() => projectCashflow(sim), [sim]);
   return (
-    <div style={{ height: 360 }}>
+    <div style={{ height: 360, paddingBottom: 28 }}>
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={data} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
           <CartesianGrid stroke={T.lineSoft} vertical={false} />
@@ -1933,6 +1930,58 @@ function CashFlowTab({ sim }) {
       <div style={{ display: "flex", gap: 16, justifyContent: "center", fontSize: 12, color: T.muted, marginTop: 4 }}>
         <span style={{ color: T.completed }}>● Available funds</span>
         <span style={{ color: T.expired }}>● Required spend</span>
+        <span style={{ color: T.action }}>▏Current month</span>
+      </div>
+    </div>
+  );
+}
+
+function monthlyFunds(sim) {
+  const byMonth = {};
+  sim.history.forEach((h) => { byMonth[h.month] = h; });
+  const probe = clone(sim);
+  let bal = probe.availableBalance;
+  const series = [];
+  for (let m = 1; m <= 60; m++) {
+    if (m < probe.month) {
+      const h = byMonth[m];
+      series.push({ month: m, available: h ? +(h.balanceAfter + h.demand).toFixed(3) : 0, used: h ? +h.demand.toFixed(3) : 0, actual: true });
+    } else {
+      const pfreq = probe.config?.fundingFrequency ?? 3;
+      if (m > probe.month && (m - 1) % pfreq === 0) {
+        const qi = Math.floor((m - 1) / pfreq);
+        bal += probe.releaseSchedule?.[qi] ?? probe.quarterlyRelease;
+      }
+      const used = actives(probe).reduce((a, p) => a + (p.sCurve[m - probe.month] || 0) * inflator(probe.monthlyRate, m), 0);
+      series.push({ month: m, available: +Math.max(0, bal).toFixed(3), used: +used.toFixed(3), actual: false });
+      bal -= used;
+    }
+  }
+  return series;
+}
+
+function FundsTab({ sim }) {
+  const data = useMemo(() => monthlyFunds(sim), [sim]);
+  return (
+    <div style={{ height: 360, paddingBottom: 28 }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} margin={{ top: 8, right: 12, left: -8, bottom: 0 }} barCategoryGap="30%">
+          <CartesianGrid stroke={T.lineSoft} vertical={false} />
+          <XAxis dataKey="month" stroke={T.faint} fontSize={11} tickLine={false} />
+          <YAxis stroke={T.faint} fontSize={11} tickLine={false} width={44} />
+          <Tooltip contentStyle={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12 }}
+            labelStyle={{ color: T.muted }} formatter={(v, n) => [money(v), n === "available" ? "Funds Available" : "Funds Used"]} labelFormatter={(m) => `Month ${m}`} />
+          {[3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57].map((m) => (
+            <ReferenceLine key={m} x={m + 1} stroke={T.lineSoft} strokeDasharray="2 4" />
+          ))}
+          <ReferenceLine x={sim.month} stroke={T.action} strokeWidth={1.5} />
+          <Bar dataKey="available" fill={T.completed} opacity={0.75} radius={[2, 2, 0, 0]} />
+          <Bar dataKey="used" fill={T.expired} opacity={0.75} radius={[2, 2, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+      <div style={{ display: "flex", gap: 16, justifyContent: "center", fontSize: 12, color: T.muted, marginTop: 4 }}>
+        <span style={{ color: T.completed }}>■ Funds Available</span>
+        <span style={{ color: T.expired }}>■ Funds Used</span>
         <span style={{ color: T.action }}>▏Current month</span>
       </div>
     </div>
@@ -2560,9 +2609,10 @@ function PortfolioDashboard({ sim }) {
    ============================================================ */
 const TABS = [
   { id: "cash", label: "Cash Flow", icon: TrendingUp },
+  { id: "funds", label: "Funds", icon: BarChart3 },
   { id: "gantt", label: "Gantt", icon: LayoutGrid },
   { id: "scurve", label: "S-Curves", icon: Activity },
-  { id: "kpi", label: "KPIs", icon: BarChart3 },
+  { id: "kpi", label: "KPIs", icon: Gauge },
 ];
 
 export default function App() {
@@ -2720,7 +2770,6 @@ export default function App() {
       <div style={{ display: "grid", gridTemplateColumns: "minmax(340px, 420px) 1fr", gap: 16, padding: 16, alignItems: "start" }} className="sim-grid">
         {/* LEFT — decisions */}
         <div>
-          <QuickAddStrip sim={sim} onAdd={(id) => commit((n) => addProject(n, id))} onPreview={(p) => setPreviewProject(p)} />
           {sim.alerts.length > 0 && (
             <div style={{ marginBottom: 12 }}>
               {sim.alerts.map((a, i) => (
@@ -2747,6 +2796,10 @@ export default function App() {
                 onSuspend={(id) => commit((n) => suspendProject(n, id))}
                 onAbandon={(id) => commit((n) => abandonProject(n, id))} />
             )) : <Empty msg="No active projects. Add one from the Available pool." />}
+          </Section>
+
+          <Section title="Top Picks" color={T.action}>
+            <QuickAddStrip sim={sim} onAdd={(id) => commit((n) => addProject(n, id))} onPreview={(p) => setPreviewProject(p)} />
           </Section>
 
           {pendingList.length > 0 && (
@@ -2798,6 +2851,7 @@ export default function App() {
               Next {FREQ_SHORT[simFreq]?.toLowerCase() ?? "quarterly"} release: Month {nextQ <= 60 ? nextQ : "—"} · {money(sim.quarterlyRelease)}
             </div>
             {tab === "cash" && <CashFlowTab sim={sim} />}
+            {tab === "funds" && <FundsTab sim={sim} />}
             {tab === "gantt" && <GanttTab sim={sim} />}
             {tab === "scurve" && <SCurveTab sim={sim} />}
             {tab === "kpi" && <KpiTab sim={sim} />}
