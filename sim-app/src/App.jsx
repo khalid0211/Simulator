@@ -22,6 +22,7 @@ const THEMES = {
     action: "#4f46e5", actionDim: "#c7c9f5",
     available: "#94a3b8", active: "#2563eb", suspended: "#d97706",
     completed: "#059669", abandoned: "#94a3b8", expired: "#e11d48",
+    arc: "#9333ea",
     scrim: "#1e293b99", shadow: "0 18px 50px #1e293b33",
   },
   dark: {
@@ -31,6 +32,7 @@ const THEMES = {
     action: "#7c83ff", actionDim: "#3b3f7a",
     available: "#64748b", active: "#3b82f6", suspended: "#f59e0b",
     completed: "#10b981", abandoned: "#475569", expired: "#f43f5e",
+    arc: "#c084fc",
     scrim: "#04070cdd", shadow: "0 24px 60px #000a",
   },
 };
@@ -71,19 +73,70 @@ function mkRng(seed) {
 }
 
 const TITLE_A = ["Digital", "Integrated", "Provincial", "Regional", "Smart", "Unified", "Rural", "Urban", "National", "Coastal", "Metro", "Strategic"];
-const TITLE_B = ["Customer Portal", "Supply Chain Overhaul", "Grid Modernisation", "Water Supply Scheme", "Health Information System", "Road Corridor", "Schools ERP", "Land Records Reform", "Revenue Platform", "Transit Network", "Irrigation Upgrade", "Logistics Hub", "Payments Switch", "Disaster Early-Warning", "Skills Academy", "Housing Programme"];
+
+/* ---- Annual Recurring Cost (ARC) reference table — median ARC as a fraction of BAC ---- */
+const ARC_CATEGORIES = [
+  { category: "Physical Infrastructure & Transport",     subCategory: "Paved Roads & Highways",             arcRate: 0.0500 },
+  { category: "Physical Infrastructure & Transport",     subCategory: "Feeder & Rural Roads",               arcRate: 0.1000 },
+  { category: "Physical Infrastructure & Transport",     subCategory: "Buildings (Administrative)",         arcRate: 0.0200 },
+  { category: "Physical Infrastructure & Transport",     subCategory: "Large-Scale Dams & Reservoirs",       arcRate: 0.0150 },
+  { category: "Social Sectors (Education & Health)",     subCategory: "Primary & Secondary Schools",        arcRate: 0.1950 },
+  { category: "Social Sectors (Education & Health)",     subCategory: "Polytechnic & Technical Schools",    arcRate: 0.2100 },
+  { category: "Social Sectors (Education & Health)",     subCategory: "General & Tertiary Hospitals",       arcRate: 0.2700 },
+  { category: "Social Sectors (Education & Health)",     subCategory: "Rural Health Centers",               arcRate: 0.4900 },
+  { category: "Agriculture, Irrigation & Resources",     subCategory: "Irrigation & Drainage Systems",      arcRate: 0.0300 },
+  { category: "Agriculture, Irrigation & Resources",     subCategory: "Agricultural Research & Extension",  arcRate: 0.0475 },
+  { category: "Agriculture, Irrigation & Resources",     subCategory: "Livestock & Veterinary Services",     arcRate: 0.1050 },
+  { category: "Agriculture, Irrigation & Resources",     subCategory: "Forestry & Watershed Development",    arcRate: 0.0250 },
+];
+
+/* ---- category-flavoured noun phrases, combined with TITLE_A modifiers ---- */
+const CATEGORY_TITLE_WORDS = {
+  "Paved Roads & Highways":            ["Highway Corridor", "Paved Road Network", "Arterial Road Upgrade"],
+  "Feeder & Rural Roads":              ["Feeder Road Programme", "Rural Access Roads", "Farm-to-Market Road Link"],
+  "Buildings (Administrative)":        ["Administrative Complex", "Government Office Building", "Civic Centre"],
+  "Large-Scale Dams & Reservoirs":     ["Dam & Reservoir Scheme", "Multipurpose Dam Project", "Water Storage Reservoir"],
+  "Primary & Secondary Schools":       ["Schools Rehabilitation Programme", "Primary Schools Expansion", "Secondary Education Campus"],
+  "Polytechnic & Technical Schools":   ["Polytechnic Institute", "Technical Training College", "Vocational Skills Campus"],
+  "General & Tertiary Hospitals":      ["General Hospital", "Tertiary Care Hospital", "Medical Centre Upgrade"],
+  "Rural Health Centers":              ["Rural Health Centre Network", "Basic Health Unit Programme", "Community Clinic Scheme"],
+  "Irrigation & Drainage Systems":     ["Irrigation & Drainage Scheme", "Canal Irrigation Upgrade", "Drainage Improvement Project"],
+  "Agricultural Research & Extension": ["Agricultural Research Station", "Extension Services Programme", "Crop Research Centre"],
+  "Livestock & Veterinary Services":   ["Livestock Development Programme", "Veterinary Services Centre", "Animal Health Station"],
+  "Forestry & Watershed Development":  ["Forestry & Watershed Programme", "Afforestation Scheme", "Watershed Management Project"],
+};
+
+function shuffle(arr, rng) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/* assign each of the 30 projects one of the 12 ARC sub-categories, spread as evenly as possible */
+function assignCategories(rng) {
+  const slots = [];
+  while (slots.length < 30) slots.push(...shuffle(ARC_CATEGORIES, rng));
+  return shuffle(slots.slice(0, 30), rng);
+}
 
 function genProjects(rng) {
+  const categorySlots = assignCategories(rng);
   const usedTitles = new Set();
   const ps = [];
   for (let i = 0; i < 30; i++) {
+    const { category, subCategory, arcRate } = categorySlots[i];
+    const words = CATEGORY_TITLE_WORDS[subCategory];
     let title;
-    do { title = `${TITLE_A[Math.floor(rng() * TITLE_A.length)]} ${TITLE_B[Math.floor(rng() * TITLE_B.length)]}`; }
-    while (usedTitles.has(title) && usedTitles.size < TITLE_A.length * TITLE_B.length);
+    do { title = `${TITLE_A[Math.floor(rng() * TITLE_A.length)]} ${words[Math.floor(rng() * words.length)]}`; }
+    while (usedTitles.has(title) && usedTitles.size < TITLE_A.length * words.length);
     usedTitles.add(title);
     ps.push({
       id: "P" + String(i + 1).padStart(2, "0"),
       title,
+      category, subCategory, arcRate,
       bacInitial: +(2 + rng() * 13).toFixed(2),       // $2M–$15M
       alignment: +(0.20 + rng() * 0.80).toFixed(2),    // 0.20–1.00
       durationPlanned: 12 + Math.floor(rng() * 25),    // 12–36
@@ -96,6 +149,7 @@ function genProjects(rng) {
       sCurve: [], sCurveBaseline: [],
       milestones: [],         // triggered thresholds e.g. [25,50]
       suspendPenalty: 0,
+      arcBaseBac: 0,          // frozen bacCurrent at completion, base for ARC calc
     });
   }
   return ps;
@@ -139,6 +193,7 @@ function newSim(cfg) {
     blindAlignment = false,
     blindScore = false,
     fundingFrequency = 3,
+    arcEnabled = true,
   } = cfg;
   const seed = Math.floor(Math.random() * 1e9);
   const rng = mkRng(seed);
@@ -182,7 +237,7 @@ function newSim(cfg) {
     projects,
     events: [], decisions: [], alerts: [], history: [],
     status: "running",
-    config: { fundingProfile, fundingFrequency, budgetTightness, politicalProjects, concurrentCap, approvalLag, riskMultiplier, blindAlignment, blindScore, preset },
+    config: { fundingProfile, fundingFrequency, budgetTightness, politicalProjects, concurrentCap, approvalLag, riskMultiplier, blindAlignment, blindScore, preset, arcEnabled },
   };
   return sim;
 }
@@ -191,6 +246,22 @@ const clone = (sim) => JSON.parse(JSON.stringify(sim));
 const actives = (sim) => sim.projects.filter((p) => p.state === "active");
 function demandAt(sim, month) {
   return actives(sim).reduce((a, p) => a + (p.sCurve[0] || 0) * inflator(sim.monthlyRate, month), 0);
+}
+
+/* ---- Annual Recurring Cost (ARC) — kicks in the month after completion, steps up by
+   the sim's inflation rate once per elapsed year (not continuously compounded like capex) ---- */
+function arcMonthlyFor(p, month, annualRate) {
+  if (!p.arcRate || !p.completionMonth || month <= p.completionMonth) return 0;
+  const elapsed = month - p.completionMonth;        // 1, 2, 3... months since completion
+  const yearIdx = Math.floor((elapsed - 1) / 12);
+  return (p.arcBaseBac * p.arcRate / 12) * Math.pow(1 + annualRate, yearIdx);
+}
+function arcDemandAt(sim, month) {
+  return sim.projects.reduce((a, p) => a + arcMonthlyFor(p, month, sim.annualRate), 0);
+}
+function totalDemandAt(sim, month) {
+  const arc = sim.config?.arcEnabled ? arcDemandAt(sim, month) : 0;
+  return demandAt(sim, month) + arc;
 }
 
 /* ---- project mutations (operate on a project object in place) ---- */
@@ -277,8 +348,8 @@ function deductAndProgress(sim, rng) {
     p.sCurveBaseline = p.sCurve.slice();
     p.durationCurrent = p.durationPlanned;
   });
-  const demand = demandAt(sim, m);
-  sim.availableBalance = +(sim.availableBalance - demand).toFixed(6);
+  const capexDemand = demandAt(sim, m);
+  sim.availableBalance = +(sim.availableBalance - capexDemand).toFixed(6);
   sim.alerts = [];
   for (const p of actives(sim)) {
     const nom = p.sCurve.shift() || 0;
@@ -317,9 +388,12 @@ function deductAndProgress(sim, rng) {
     if (p.sCurve.length === 0 && p.state === "active") {
       p.state = "completed";
       p.completionMonth = m;
+      p.arcBaseBac = p.bacCurrent;
     }
   }
-  sim.history.push({ month: m, demand: +demand.toFixed(3), balanceAfter: +sim.availableBalance.toFixed(3) });
+  const arcAmount = sim.config?.arcEnabled ? arcDemandAt(sim, m) : 0;
+  sim.availableBalance = +(sim.availableBalance - arcAmount).toFixed(6);
+  sim.history.push({ month: m, demand: +capexDemand.toFixed(3), arc: +arcAmount.toFixed(3), balanceAfter: +sim.availableBalance.toFixed(3) });
   // roll to next month
   sim.month = m + 1;
   if (sim.month <= 60) {
@@ -534,7 +608,7 @@ function computeHint(sim) {
     const bac = p.bacInitial * inflator(sim.monthlyRate, m);
     return { ...p, bac, afford: bac <= bal + 1e-9, finishable: p.durationPlanned <= monthsLeft };
   });
-  const demand = demandAt(sim, m);
+  const demand = totalDemandAt(sim, m);
   const projEnd = (p) => p.startMonth + (p.durationCurrent || 0);
   const expiring = act.filter((p) => projEnd(p) > 60);
   const lowestActive = [...act].sort((a, b) => a.alignment - b.alignment)[0];
@@ -1136,9 +1210,9 @@ function PortfolioReportModal({ sim, onClose }) {
    SETUP SCREEN
    ============================================================ */
 const DIFFICULTY_PRESETS = {
-  learning:  { annualRate: 0.02, fundingProfile: "flat",       budgetTightness: 1.2, politicalProjects: 0, concurrentCap: 0, approvalLag: 0, riskMultiplier: 0.5, blindAlignment: false, blindScore: false },
-  standard:  { annualRate: 0.03, fundingProfile: "scurve",     budgetTightness: 1.5, politicalProjects: 2, concurrentCap: 0, approvalLag: 0, riskMultiplier: 1.0, blindAlignment: false, blindScore: false },
-  advanced:  { annualRate: 0.05, fundingProfile: "volatile",   budgetTightness: 1.8, politicalProjects: 4, concurrentCap: 8, approvalLag: 2, riskMultiplier: 1.5, blindAlignment: false, blindScore: true  },
+  learning:  { annualRate: 0.02, fundingProfile: "flat",       budgetTightness: 1.2, politicalProjects: 0, concurrentCap: 0, approvalLag: 0, riskMultiplier: 0.5, blindAlignment: false, blindScore: false, arcEnabled: false },
+  standard:  { annualRate: 0.03, fundingProfile: "scurve",     budgetTightness: 1.5, politicalProjects: 2, concurrentCap: 0, approvalLag: 0, riskMultiplier: 1.0, blindAlignment: false, blindScore: false, arcEnabled: true  },
+  advanced:  { annualRate: 0.05, fundingProfile: "volatile",   budgetTightness: 1.8, politicalProjects: 4, concurrentCap: 8, approvalLag: 2, riskMultiplier: 1.5, blindAlignment: false, blindScore: true,  arcEnabled: true  },
 };
 
 const FUNDING_LABELS = { flat: "Flat (equal each quarter)", scurve: "S-Curve (slow-peak-taper)", frontloaded: "Front-loaded (heavy early)", backloaded: "Back-loaded (heavy late)", volatile: "Volatile (±20% each quarter)" };
@@ -1191,6 +1265,9 @@ function SetupScreen({ onStart, onResume, hasSave }) {
   const [riskMultiplier,   setRiskMultiplier]   = useState("1.0");
   const [visibility,       setVisibility]       = useState("full");
   const [fundingFrequency, setFundingFrequency] = useState("3");
+  const [arcEnabled,       setArcEnabled]       = useState(true);
+
+  const arcLocked = preset === "learning" || preset === "advanced";
 
   const applyPreset = (p) => {
     setPreset(p);
@@ -1204,6 +1281,7 @@ function SetupScreen({ onStart, onResume, hasSave }) {
     setApprovalLag(String(d.approvalLag));
     setRiskMultiplier(String(d.riskMultiplier));
     setVisibility(d.blindScore && d.blindAlignment ? "full_blind" : d.blindScore ? "blind_score" : d.blindAlignment ? "blind_align" : "full");
+    setArcEnabled(d.arcEnabled);
     setShowCustom(false);
   };
 
@@ -1221,6 +1299,7 @@ function SetupScreen({ onStart, onResume, hasSave }) {
     blindAlignment: visibility === "blind_align" || visibility === "full_blind",
     blindScore: visibility === "blind_score" || visibility === "full_blind",
     fundingFrequency: parseInt(fundingFrequency),
+    arcEnabled,
   });
 
   const PRESETS = [
@@ -1274,6 +1353,37 @@ function SetupScreen({ onStart, onResume, hasSave }) {
                 <div style={{ fontSize: 11, color: T.muted, marginTop: 3, lineHeight: 1.4 }}>{pr.sub}</div>
               </button>
             ))}
+          </div>
+
+          {/* Integrated Budget Wallet (ARC) toggle — always visible, locked by Learning/Advanced */}
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+            background: T.panel2, border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 14px", marginBottom: 20,
+            opacity: arcLocked ? 0.65 : 1,
+          }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>Integrated Budget Wallet</div>
+              <div style={{ fontSize: 11, color: T.muted, marginTop: 2, lineHeight: 1.4 }}>
+                {arcLocked
+                  ? `Always ${arcEnabled ? "on" : "off"} for ${preset === "learning" ? "Learning" : "Advanced"}`
+                  : "Ongoing Annual Recurring Cost for completed projects, drawn from the same budget"}
+              </div>
+            </div>
+            <button
+              onClick={() => !arcLocked && setArcEnabled(!arcEnabled)}
+              disabled={arcLocked}
+              title={arcLocked ? "Locked by difficulty preset" : "Toggle Integrated Budget Wallet"}
+              style={{
+                flexShrink: 0, width: 44, height: 24, borderRadius: 999, border: `1px solid ${T.line}`,
+                background: arcEnabled ? T.action : T.panel, position: "relative",
+                cursor: arcLocked ? "not-allowed" : "pointer", padding: 0, transition: "background .15s",
+              }}
+            >
+              <span style={{
+                position: "absolute", top: 2, left: arcEnabled ? 22 : 2, width: 18, height: 18, borderRadius: "50%",
+                background: "#fff", boxShadow: "0 1px 3px #0004", transition: "left .15s",
+              }} />
+            </button>
           </div>
 
           {/* custom parameters — always visible when custom selected, collapsible otherwise */}
@@ -1340,13 +1450,14 @@ function SetupScreen({ onStart, onResume, hasSave }) {
         </Panel>
 
         {/* summary of active settings */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 8 }}>
           {[
             ["Inflation", annualRate.toFixed(1) + "%"],
             ["Funding", FUNDING_LABELS[fundingProfile]?.split(" ")[0]],
             ["Cadence", FREQ_SHORT[fundingFrequency] ?? "Quarterly"],
             ["Political", politicalProjects + " forced"],
             ["Risk", RISK_LABELS[riskMultiplier]?.split(" ")[0]],
+            ["Wallet", arcEnabled ? "On" : "Off"],
           ].map(([l, v]) => (
             <div key={l} style={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
               <div style={{ fontSize: 10, color: T.faint, textTransform: "uppercase", letterSpacing: ".05em" }}>{l}</div>
@@ -1404,6 +1515,9 @@ function ActiveRow({ sim, p, onSlow, onSpeed, onSuspend, onAbandon }) {
           </div>
           <div style={{ fontSize: 11, color: T.muted, marginTop: 2, ...mono }}>
             BAC {money(p.bacCurrent)} · spend {money(thisSpend)}/mo · ends M{projEnd > 60 ? `${projEnd}⚠` : projEnd}
+          </div>
+          <div style={{ fontSize: 10.5, color: T.faint, marginTop: 1 }}>
+            {p.subCategory} · ARC {pct(p.arcRate)}
           </div>
           {/* status badges */}
           <div style={{ display: "flex", gap: 5, marginTop: 4, flexWrap: "wrap" }}>
@@ -1527,11 +1641,12 @@ function ProjectPreviewModal({ sim, project, onAdd, onClose }) {
         See how adding this project affects your cash flow before committing.
       </p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 14 }}>
         <Stat label="BAC (inflation-adj)" value={money(bac)} />
         <Stat label="Duration" value={`${project.durationPlanned}m`} sub={`ends M${projEnd}`} accent={projEnd > 60 ? T.expired : T.text} />
         {!blind && <Stat label="Strategic fit" value={pct(project.alignment)} accent={alignColor} />}
         <Stat label="Monthly burn increase" value={money(monthlyBurnIncrease)} accent={monthlyBurnIncrease > 0 ? T.suspended : T.text} />
+        <Stat label="ARC rate" value={pct(project.arcRate)} sub={project.subCategory} accent={T.arc} />
       </div>
 
       <div style={{ marginBottom: 6, fontSize: 11.5, fontWeight: 700, color: T.text, textTransform: "uppercase", letterSpacing: ".05em" }}>
@@ -1669,18 +1784,21 @@ function AvailableTable({ sim, onAdd, onPreview }) {
           <Hdr k="bac" w={86}>BAC</Hdr>
           <Hdr k="duration" w={56}>Dur</Hdr>
           <Hdr k="risk" w={70}>Risk c/d</Hdr>
+          <th style={{ width: 60, textAlign: "left", padding: "6px 8px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", color: T.muted }}>ARC</th>
           <th style={{ width: 80 }} />
         </tr></thead>
         <tbody>
           {rows.map((p) => (
             <tr key={p.id} style={{ borderBottom: `1px solid ${T.lineSoft}`, opacity: (p.afford && !capReached) ? 1 : 0.5 }}>
               <td style={{ padding: "7px 8px", fontSize: 12.5 }}>
-                <span style={{ color: T.faint, ...mono }}>{p.id}</span> {p.title}
+                <div><span style={{ color: T.faint, ...mono }}>{p.id}</span> {p.title}</div>
+                <div style={{ fontSize: 10.5, color: T.faint, marginTop: 1 }}>{p.subCategory}</div>
               </td>
               {!blind && <td style={{ padding: "7px 8px" }}><Badge color={alignColor(p.alignment)}>{pct(p.alignment)}</Badge></td>}
               <td style={{ padding: "7px 8px", fontSize: 12.5, ...mono }}>{money(p.bacShown)}</td>
               <td style={{ padding: "7px 8px", fontSize: 12.5, ...mono }}>{p.durationPlanned}m</td>
               <td style={{ padding: "7px 8px", fontSize: 11.5, color: T.muted, ...mono }}>{pct(p.costRisk)}/{pct(p.durRisk)}</td>
+              <td style={{ padding: "7px 8px", fontSize: 11.5, color: T.arc, ...mono }}>{pct(p.arcRate)}</td>
               <td style={{ padding: "7px 8px" }}>
                 <div style={{ display: "flex", gap: 4 }}>
                   <Btn onClick={() => onPreview(p)} title="Preview cash-flow impact" style={{ padding: "4px 8px" }}>
@@ -1694,7 +1812,7 @@ function AvailableTable({ sim, onAdd, onPreview }) {
             </tr>
           ))}
           {rows.length === 0 && (
-            <tr><td colSpan={blind ? 5 : 6} style={{ padding: 16, textAlign: "center", color: T.faint, fontSize: 12 }}>No projects left in the pool.</td></tr>
+            <tr><td colSpan={blind ? 6 : 7} style={{ padding: 16, textAlign: "center", color: T.faint, fontSize: 12 }}>No projects left in the pool.</td></tr>
           )}
         </tbody>
       </table>
@@ -1836,7 +1954,7 @@ function HintModal({ sim, onClose, onApply }) {
    SHORTFALL RESOLUTION  (blocking)
    ============================================================ */
 function ShortfallPanel({ sim, month, onSlow, onSuspend, onAbandon, onConfirm }) {
-  const demand = demandAt(sim, month);
+  const demand = totalDemandAt(sim, month);
   const gap = demand - sim.availableBalance;
   const resolved = gap <= 1e-6;
   return (
@@ -1882,8 +2000,27 @@ function ShortfallPanel({ sim, month, onSlow, onSuspend, onAbandon, onConfirm })
 /* ============================================================
    DASHBOARD TABS
    ============================================================ */
+/* ---- projected ARC for a future month m, given a probe clone still sitting at probe.month ---- */
+function projectedArcAt(probe, m) {
+  let total = 0;
+  for (const p of probe.projects) {
+    if (p.state === "completed") {
+      total += arcMonthlyFor(p, m, probe.annualRate);
+    } else if (p.state === "active" && p.arcRate && p.sCurve.length > 0) {
+      const projCompletion = probe.month + p.sCurve.length - 1;
+      if (m > projCompletion) {
+        const elapsed = m - projCompletion;
+        const yearIdx = Math.floor((elapsed - 1) / 12);
+        total += (p.bacCurrent * p.arcRate / 12) * Math.pow(1 + probe.annualRate, yearIdx);
+      }
+    }
+  }
+  return total;
+}
+
 function projectCashflow(sim) {
   // history (actual) up to current month-1, then projection forward (read-only)
+  const arcOn = !!sim.config?.arcEnabled;
   const series = [];
   const byMonth = {};
   sim.history.forEach((h) => { byMonth[h.month] = h; });
@@ -1893,7 +2030,8 @@ function projectCashflow(sim) {
   for (let m = 1; m <= 60; m++) {
     if (m < probe.month) {
       const h = byMonth[m];
-      series.push({ month: m, required: h ? h.demand : 0, available: h ? h.balanceAfter + h.demand : null, actual: true });
+      const arc = h?.arc ?? 0;
+      series.push({ month: m, required: h ? h.demand : 0, arc, available: h ? h.balanceAfter + h.demand + arc : null, actual: true });
     } else {
       const pfreq = probe.config?.fundingFrequency ?? 3;
       if (m > probe.month && (m - 1) % pfreq === 0) {
@@ -1901,8 +2039,9 @@ function projectCashflow(sim) {
         bal += probe.releaseSchedule?.[qi] ?? probe.quarterlyRelease;
       }
       const req = actives(probe).reduce((a, p) => a + (p.sCurve[m - probe.month] || 0) * inflator(probe.monthlyRate, m), 0);
-      series.push({ month: m, required: +req.toFixed(3), available: +Math.max(0, bal).toFixed(3), actual: false });
-      bal -= req;
+      const arc = arcOn ? projectedArcAt(probe, m) : 0;
+      series.push({ month: m, required: +req.toFixed(3), arc: +arc.toFixed(3), available: +Math.max(0, bal).toFixed(3), actual: false });
+      bal -= (req + arc);
     }
   }
   return series;
@@ -1910,6 +2049,7 @@ function projectCashflow(sim) {
 
 function CashFlowTab({ sim }) {
   const data = useMemo(() => projectCashflow(sim), [sim]);
+  const arcOn = !!sim.config?.arcEnabled;
   return (
     <div style={{ height: 360, paddingBottom: 28 }}>
       <ResponsiveContainer width="100%" height="100%">
@@ -1918,18 +2058,20 @@ function CashFlowTab({ sim }) {
           <XAxis dataKey="month" stroke={T.faint} fontSize={11} tickLine={false} />
           <YAxis stroke={T.faint} fontSize={11} tickLine={false} width={44} />
           <Tooltip contentStyle={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12 }}
-            labelStyle={{ color: T.muted }} formatter={(v, n) => [money(v), n === "required" ? "Required" : "Available"]} labelFormatter={(m) => `Month ${m}`} />
+            labelStyle={{ color: T.muted }} formatter={(v, n) => [money(v), n === "required" ? "Required" : n === "arc" ? "ARC (recurring)" : "Available"]} labelFormatter={(m) => `Month ${m}`} />
           {[3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57].map((m) => (
             <ReferenceLine key={m} x={m + 1} stroke={T.lineSoft} strokeDasharray="2 4" />
           ))}
           <ReferenceLine x={sim.month} stroke={T.action} strokeWidth={1.5} />
           <Line type="monotone" dataKey="available" stroke={T.completed} strokeWidth={2} dot={false} />
           <Line type="monotone" dataKey="required" stroke={T.expired} strokeWidth={2} dot={false} />
+          {arcOn && <Line type="monotone" dataKey="arc" stroke={T.arc} strokeWidth={2} dot={false} />}
         </LineChart>
       </ResponsiveContainer>
       <div style={{ display: "flex", gap: 16, justifyContent: "center", fontSize: 12, color: T.muted, marginTop: 4 }}>
         <span style={{ color: T.completed }}>● Available funds</span>
         <span style={{ color: T.expired }}>● Required spend</span>
+        {arcOn && <span style={{ color: T.arc }}>● ARC (recurring)</span>}
         <span style={{ color: T.action }}>▏Current month</span>
       </div>
     </div>
@@ -1937,6 +2079,7 @@ function CashFlowTab({ sim }) {
 }
 
 function monthlyFunds(sim) {
+  const arcOn = !!sim.config?.arcEnabled;
   const byMonth = {};
   sim.history.forEach((h) => { byMonth[h.month] = h; });
   const probe = clone(sim);
@@ -1945,7 +2088,8 @@ function monthlyFunds(sim) {
   for (let m = 1; m <= 60; m++) {
     if (m < probe.month) {
       const h = byMonth[m];
-      series.push({ month: m, available: h ? +(h.balanceAfter + h.demand).toFixed(3) : 0, used: h ? +h.demand.toFixed(3) : 0, actual: true });
+      const arc = h?.arc ?? 0;
+      series.push({ month: m, available: h ? +(h.balanceAfter + h.demand + arc).toFixed(3) : 0, used: h ? +h.demand.toFixed(3) : 0, arc: +arc.toFixed(3), actual: true });
     } else {
       const pfreq = probe.config?.fundingFrequency ?? 3;
       if (m > probe.month && (m - 1) % pfreq === 0) {
@@ -1953,8 +2097,9 @@ function monthlyFunds(sim) {
         bal += probe.releaseSchedule?.[qi] ?? probe.quarterlyRelease;
       }
       const used = actives(probe).reduce((a, p) => a + (p.sCurve[m - probe.month] || 0) * inflator(probe.monthlyRate, m), 0);
-      series.push({ month: m, available: +Math.max(0, bal).toFixed(3), used: +used.toFixed(3), actual: false });
-      bal -= used;
+      const arc = arcOn ? projectedArcAt(probe, m) : 0;
+      series.push({ month: m, available: +Math.max(0, bal).toFixed(3), used: +used.toFixed(3), arc: +arc.toFixed(3), actual: false });
+      bal -= (used + arc);
     }
   }
   return series;
@@ -1962,6 +2107,7 @@ function monthlyFunds(sim) {
 
 function FundsTab({ sim }) {
   const data = useMemo(() => monthlyFunds(sim), [sim]);
+  const arcOn = !!sim.config?.arcEnabled;
   return (
     <div style={{ height: 360, paddingBottom: 28 }}>
       <ResponsiveContainer width="100%" height="100%">
@@ -1970,18 +2116,20 @@ function FundsTab({ sim }) {
           <XAxis dataKey="month" stroke={T.faint} fontSize={11} tickLine={false} />
           <YAxis stroke={T.faint} fontSize={11} tickLine={false} width={44} />
           <Tooltip contentStyle={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12 }}
-            labelStyle={{ color: T.muted }} formatter={(v, n) => [money(v), n === "available" ? "Funds Available" : "Funds Used"]} labelFormatter={(m) => `Month ${m}`} />
+            labelStyle={{ color: T.muted }} formatter={(v, n) => [money(v), n === "available" ? "Funds Available" : n === "arc" ? "ARC (recurring)" : "Funds Used"]} labelFormatter={(m) => `Month ${m}`} />
           {[3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57].map((m) => (
             <ReferenceLine key={m} x={m + 1} stroke={T.lineSoft} strokeDasharray="2 4" />
           ))}
           <ReferenceLine x={sim.month} stroke={T.action} strokeWidth={1.5} />
           <Bar dataKey="available" fill={T.completed} opacity={0.75} radius={[2, 2, 0, 0]} />
           <Bar dataKey="used" fill={T.expired} opacity={0.75} radius={[2, 2, 0, 0]} />
+          {arcOn && <Bar dataKey="arc" fill={T.arc} opacity={0.75} radius={[2, 2, 0, 0]} />}
         </BarChart>
       </ResponsiveContainer>
       <div style={{ display: "flex", gap: 16, justifyContent: "center", fontSize: 12, color: T.muted, marginTop: 4 }}>
         <span style={{ color: T.completed }}>■ Funds Available</span>
         <span style={{ color: T.expired }}>■ Funds Used</span>
+        {arcOn && <span style={{ color: T.arc }}>■ ARC (recurring)</span>}
         <span style={{ color: T.action }}>▏Current month</span>
       </div>
     </div>
@@ -2090,6 +2238,9 @@ function KpiTab({ sim }) {
     return projEnd > 58 || (p.sCurve[0] || 0) * inflator(sim.monthlyRate, sim.month) > sim.availableBalance * 0.5;
   }).length;
   const live = liveScore(sim);
+  const arcOn = !!sim.config?.arcEnabled;
+  const arcCumulative = sim.history.reduce((a, h) => a + (h.arc || 0), 0);
+  const arcThisMonth = arcOn ? arcDemandAt(sim, sim.month) : 0;
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px,1fr))", gap: 12 }}>
       <Panel style={{ padding: 14, gridColumn: "span 1" }}>
@@ -2106,6 +2257,9 @@ function KpiTab({ sim }) {
       <Stat label="Months remaining" value={Math.max(0, 61 - sim.month)} sub={`of 60 · now M${sim.month}`} />
       <Stat label="Available funds" value={money(sim.availableBalance)} accent={T.completed} />
       <Stat label="Total budget" value={money(sim.totalBudget)} sub={`release ${money(sim.quarterlyRelease)}/qtr`} />
+      {arcOn
+        ? <Stat label="ARC this month" value={money(arcThisMonth)} sub={`cumulative ${money(arcCumulative)} paid`} accent={T.arc} />
+        : <Stat label="Integrated Budget Wallet" value="Off" sub="no recurring cost this run" />}
     </div>
   );
 }
@@ -2557,6 +2711,9 @@ function PortfolioDashboard({ sim }) {
   const completedRatio = sim.maxComp > 0 ? completed.length / sim.maxComp : 0;
 
   const blind = sim.config?.blindAlignment;
+  const arcOn = !!sim.config?.arcEnabled;
+  const arcCumulative = sim.history.reduce((a, h) => a + (h.arc || 0), 0);
+  const arcRunRate = arcOn ? arcDemandAt(sim, sim.month) : 0;
 
   const KpiCard = ({ icon: Icon, label, bigNum, bigColor, sub, barValue, barColor }) => (
     <div style={{ flex: 1, padding: "10px 16px", borderRight: `1px solid ${T.line}` }}>
@@ -2600,6 +2757,17 @@ function PortfolioDashboard({ sim }) {
         barValue={completedRatio}
         barColor={completedRatio >= 0.75 ? T.completed : completedRatio >= 0.4 ? T.action : T.suspended}
       />
+      {arcOn && (
+        <KpiCard
+          icon={RotateCcw}
+          label="ARC Exposure"
+          bigNum={money(arcCumulative)}
+          bigColor={T.arc}
+          sub={`${money(arcRunRate)}/mo · ${completed.length} completed project${completed.length !== 1 ? "s" : ""}`}
+          barValue={sim.totalBudget > 0 ? Math.min(1, arcCumulative / sim.totalBudget) : 0}
+          barColor={T.arc}
+        />
+      )}
     </div>
   );
 }
@@ -2659,7 +2827,7 @@ export default function App() {
   };
 
   const tryAdvance = () => {
-    const demand = demandAt(sim, sim.month);
+    const demand = totalDemandAt(sim, sim.month);
     if (demand > sim.availableBalance + 1e-6) { setShortfall(true); return; }
     doAdvance();
   };
@@ -2676,7 +2844,7 @@ export default function App() {
     const justCompleted = next.projects.filter((p) => p.completionMonth === prevMonth);
     const wasRelease = ((next.month - 1) % 3 === 0);
     const qi = Math.floor((next.month - 1) / 3);
-    const parts = [`Month ${prevMonth} complete`, `${money(h?.demand ?? 0)} spent`];
+    const parts = [`Month ${prevMonth} complete`, `${money((h?.demand ?? 0) + (h?.arc ?? 0))} spent`];
     if (justCompleted.length) parts.push(`✓ ${justCompleted.map((p) => p.id).join(", ")} delivered`);
     if (next.alerts.length) parts.push(`⚠ ${next.alerts.length} risk event${next.alerts.length > 1 ? "s" : ""}`);
     if (wasRelease) parts.push(`Q${qi} released`);
@@ -2693,7 +2861,7 @@ export default function App() {
   const suspendedList = sim.projects.filter((p) => p.state === "suspended");
   const pendingList = sim.projects.filter((p) => p.state === "pending");
   const blindScore = sim.config?.blindScore;
-  const demandThisMonth = demandAt(sim, sim.month);
+  const demandThisMonth = totalDemandAt(sim, sim.month);
   const advanceKind = demandThisMonth > sim.availableBalance ? "danger" : demandThisMonth > sim.availableBalance * 0.8 ? "warn" : "primary";
 
   return (
