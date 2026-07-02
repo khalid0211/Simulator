@@ -40,7 +40,7 @@ const T = { ...THEMES.light };
 function applyTheme(name) { Object.assign(T, THEMES[name] || THEMES.light); }
 
 const sc = (k) => T[k];                                   // state colour, live
-const dc = (t) => ({ add: T.completed, slow: T.suspended, speed: T.active, suspend: T.suspended, resume: T.active, abandon: T.expired }[t] || T.muted);
+const dc = (t) => ({ add: T.completed, slow: T.suspended, speed: T.active, suspend: T.suspended, resume: T.active, abandon: T.expired, arc_reduce: T.arc, arc_restore: T.action, arc_cutoff: T.expired }[t] || T.muted);
 const STATE_LABEL = {
   available: "Available", active: "Active", suspended: "Suspended",
   completed: "Completed", abandoned: "Abandoned", expired: "Expired",
@@ -89,6 +89,23 @@ const ARC_CATEGORIES = [
   { category: "Agriculture, Irrigation & Resources",     subCategory: "Livestock & Veterinary Services",     arcRate: 0.1050 },
   { category: "Agriculture, Irrigation & Resources",     subCategory: "Forestry & Watershed Development",    arcRate: 0.0250 },
 ];
+
+/* ---- Social Benefits — BU (Benefit Units) per $1M of BAC per month, before risk premium ---- */
+const BU_INTENSITY = {
+  "Paved Roads & Highways":            0.8,
+  "Feeder & Rural Roads":              1.0,
+  "Buildings (Administrative)":        0.3,
+  "Large-Scale Dams & Reservoirs":     0.6,
+  "Primary & Secondary Schools":       1.6,
+  "Polytechnic & Technical Schools":   1.4,
+  "General & Tertiary Hospitals":      2.0,
+  "Rural Health Centers":              1.8,
+  "Irrigation & Drainage Systems":     1.1,
+  "Agricultural Research & Extension": 0.9,
+  "Livestock & Veterinary Services":   0.9,
+  "Forestry & Watershed Development":  0.7,
+};
+const BU_VALUE = 0.02; // $M of "social value" per BU, display only — does not touch the cash budget
 
 /* ---- category-flavoured noun phrases, combined with TITLE_A modifiers ---- */
 const CATEGORY_TITLE_WORDS = {
@@ -150,6 +167,12 @@ function genProjects(rng) {
       milestones: [],         // triggered thresholds e.g. [25,50]
       suspendPenalty: 0,
       arcBaseBac: 0,          // frozen bacCurrent at completion, base for ARC calc
+      arcReduced: false,      // funding cut 30% to relieve a shortfall
+      arcBacklog: 0,          // $ owed to restore full ARC funding
+      arcReductionCount: 0,   // times this project's ARC has ever been reduced (permanent score penalty)
+      arcCutoff: false,       // funding fully cut off — project moved to abandoned, benefits go negative
+      buRate: 0,              // Benefit Units/month once completed and fully funded (set in newSim, after risk multiplier)
+      buCumulative: 0,        // running total BU generated (can go negative under full cutoff)
     });
   }
   return ps;
@@ -194,6 +217,7 @@ function newSim(cfg) {
     blindScore = false,
     fundingFrequency = 3,
     arcEnabled = true,
+    benefitsEnabled = false,
   } = cfg;
   const seed = Math.floor(Math.random() * 1e9);
   const rng = mkRng(seed);
@@ -202,6 +226,7 @@ function newSim(cfg) {
   projects.forEach((p) => {
     p.costRisk = Math.min(0.40, +(p.costRisk * riskMultiplier).toFixed(3));
     p.durRisk  = Math.min(0.40, +(p.durRisk  * riskMultiplier).toFixed(3));
+    p.buRate = +(p.bacInitial * (BU_INTENSITY[p.subCategory] || 1) * (1 + p.costRisk + p.durRisk)).toFixed(2);
   });
   const totalBudget = +(projects.reduce((a, p) => a + p.bacInitial, 0) / budgetTightness).toFixed(2);
   const N = Math.round(60 / fundingFrequency);
@@ -237,7 +262,7 @@ function newSim(cfg) {
     projects,
     events: [], decisions: [], alerts: [], history: [],
     status: "running",
-    config: { fundingProfile, fundingFrequency, budgetTightness, politicalProjects, concurrentCap, approvalLag, riskMultiplier, blindAlignment, blindScore, preset, arcEnabled },
+    config: { fundingProfile, fundingFrequency, budgetTightness, politicalProjects, concurrentCap, approvalLag, riskMultiplier, blindAlignment, blindScore, preset, arcEnabled, benefitsEnabled },
   };
   return sim;
 }
@@ -250,14 +275,66 @@ function demandAt(sim, month) {
 
 /* ---- Annual Recurring Cost (ARC) — kicks in the month after completion, steps up by
    the sim's inflation rate once per elapsed year (not continuously compounded like capex) ---- */
-function arcMonthlyFor(p, month, annualRate) {
+function arcFullMonthlyFor(p, month, annualRate) {
   if (!p.arcRate || !p.completionMonth || month <= p.completionMonth) return 0;
   const elapsed = month - p.completionMonth;        // 1, 2, 3... months since completion
   const yearIdx = Math.floor((elapsed - 1) / 12);
   return (p.arcBaseBac * p.arcRate / 12) * Math.pow(1 + annualRate, yearIdx);
 }
+function arcMonthlyFor(p, month, annualRate) {
+  const full = arcFullMonthlyFor(p, month, annualRate);
+  return p.arcReduced ? full * 0.7 : full;
+}
 function arcDemandAt(sim, month) {
   return sim.projects.reduce((a, p) => a + arcMonthlyFor(p, month, sim.annualRate), 0);
+}
+/* ---- shortfall relief: cut a completed project's ARC funding 30%, at a permanent -2 score
+   penalty; restoring requires repaying the accumulated 30% shortfall as a lump sum. Capped at
+   2 reductions per project (lifetime, restores don't reset the count) — beyond that, the lever
+   is exhausted and cutArcCompletely (abandon) is the only remaining option. ---- */
+function reduceArcFunding(sim, id) {
+  const p = sim.projects.find((x) => x.id === id);
+  if (!p || p.state !== "completed" || p.arcReduced || (p.arcReductionCount || 0) >= 2) return;
+  p.arcReduced = true;
+  p.arcReductionCount = (p.arcReductionCount || 0) + 1;
+  sim.decisions.push({ month: sim.month, type: "arc_reduce", id, title: p.title });
+}
+function restoreArcFunding(sim, id) {
+  const p = sim.projects.find((x) => x.id === id);
+  if (!p || !p.arcReduced) return;
+  const backlog = p.arcBacklog || 0;
+  if (sim.availableBalance + 1e-6 < backlog) return;
+  sim.availableBalance = +(sim.availableBalance - backlog).toFixed(6);
+  p.arcReduced = false;
+  p.arcBacklog = 0;
+  sim.decisions.push({ month: sim.month, type: "arc_restore", id, title: p.title });
+}
+/* ---- full ARC cutoff: once a project has used both its lifetime ARC reductions, the only
+   funding-shortfall lever left is to abandon it outright. It moves to abandoned (dropping its
+   Delivery credit and counting its BAC as wasted via the existing abandoned/sunk-cost scoring
+   path) and its benefits flip permanently negative. ---- */
+function cutArcCompletely(sim, id) {
+  const p = sim.projects.find((x) => x.id === id);
+  if (!p || p.state !== "completed") return;
+  p.state = "abandoned";
+  p.arcCutoff = true;
+  p.arcReduced = false;
+  p.arcBacklog = 0;
+  sim.decisions.push({ month: sim.month, type: "arc_cutoff", id, title: p.title });
+}
+
+/* ---- Social Benefits (BU) — kicks in the month after completion, same lag as ARC.
+   Reduced ARC funding costs benefits at 2x the funding cut; a full cutoff flips generation
+   negative at 1.5x the normal rate for the rest of the run. ---- */
+const isBenefitTracked = (p) => p.state === "completed" || (p.state === "abandoned" && p.arcCutoff);
+function benefitMonthlyFor(p, month) {
+  if (!p.buRate || !p.completionMonth || month <= p.completionMonth) return 0;
+  if (p.arcCutoff) return -1.5 * p.buRate;
+  return p.arcReduced ? p.buRate * 0.4 : p.buRate;
+}
+function benefitPotentialFor(p, uptoMonth) {
+  if (!p.buRate || !p.completionMonth) return 0;
+  return p.buRate * Math.max(0, uptoMonth - p.completionMonth);
 }
 function totalDemandAt(sim, month) {
   const arc = sim.config?.arcEnabled ? arcDemandAt(sim, month) : 0;
@@ -391,8 +468,27 @@ function deductAndProgress(sim, rng) {
       p.arcBaseBac = p.bacCurrent;
     }
   }
-  const arcAmount = sim.config?.arcEnabled ? arcDemandAt(sim, m) : 0;
+  let arcAmount = 0;
+  if (sim.config?.arcEnabled) {
+    for (const p of sim.projects) {
+      if (p.state !== "completed") continue;
+      const full = arcFullMonthlyFor(p, m, sim.annualRate);
+      if (p.arcReduced) {
+        const reduced = full * 0.7;
+        p.arcBacklog = +((p.arcBacklog || 0) + (full - reduced)).toFixed(6);
+        arcAmount += reduced;
+      } else {
+        arcAmount += full;
+      }
+    }
+  }
   sim.availableBalance = +(sim.availableBalance - arcAmount).toFixed(6);
+  if (sim.config?.benefitsEnabled) {
+    for (const p of sim.projects) {
+      if (!isBenefitTracked(p)) continue;
+      p.buCumulative = +((p.buCumulative || 0) + benefitMonthlyFor(p, m)).toFixed(3);
+    }
+  }
   sim.history.push({ month: m, demand: +capexDemand.toFixed(3), arc: +arcAmount.toFixed(3), balanceAfter: +sim.availableBalance.toFixed(3) });
   // roll to next month
   sim.month = m + 1;
@@ -410,34 +506,56 @@ function deductAndProgress(sim, rng) {
   }
 }
 
-function finalize(sim) {
+function finalize(sim, { insolvent = false } = {}) {
   sim.projects.forEach((p) => {
     if (p.state === "active" || p.state === "suspended" || p.state === "pending") p.state = "expired";
   });
   sim.status = "ended";
+  sim.insolvent = insolvent;
+  sim.endMonth = sim.month;
   sim.score = scoreSim(sim);
+}
+/* ---- called when a funding shortfall cannot be resolved by any available lever ---- */
+function endInsolvent(sim) {
+  if (sim.status === "ended") return;
+  finalize(sim, { insolvent: true });
 }
 
 function scoreSim(sim) {
   const completed = sim.projects.filter((p) => p.state === "completed");
   const abandoned = sim.projects.filter((p) => p.state === "abandoned");
   const expired = sim.projects.filter((p) => p.state === "expired");
-  const delivery = Math.min(completed.length / Math.max(1, sim.maxComp), 1) * 40;
+  const benefitsOn = !!sim.config?.benefitsEnabled;
+  const deliveryMax = benefitsOn ? 35 : 40;
+  const alignmentMax = benefitsOn ? 30 : 35;
+  const efficiencyMax = benefitsOn ? 20 : 25;
+  const delivery = Math.min(completed.length / Math.max(1, sim.maxComp), 1) * deliveryMax;
   const alignment = completed.length
-    ? (completed.reduce((a, p) => a + p.alignment, 0) / completed.length) * 35 : 0;
+    ? (completed.reduce((a, p) => a + p.alignment, 0) / completed.length) * alignmentMax : 0;
   const sunk = abandoned.reduce((a, p) => a + p.cashDrawn, 0);
   const unspent = Math.max(0, sim.availableBalance);
   const wasted = Math.min(1, Math.max(0, (sunk + unspent) / sim.totalBudget));
-  const efficiency = (1 - wasted) * 25;
-  const raw = delivery + alignment + efficiency;
-  const penalty = abandoned.length * 2 + expired.length * 1;
+  const efficiency = (1 - wasted) * efficiencyMax;
+  const benefitTracked = sim.projects.filter(isBenefitTracked);
+  const benefitsPotentialBU = benefitTracked.reduce((a, p) => a + benefitPotentialFor(p, sim.month), 0);
+  const benefitsBU = benefitTracked.reduce((a, p) => a + (p.buCumulative || 0), 0);
+  const benefits = benefitsOn
+    ? (benefitsPotentialBU > 0 ? Math.max(0, Math.min(1, benefitsBU / benefitsPotentialBU)) * 15 : 0)
+    : 0;
+  const arcReductions = sim.projects.reduce((a, p) => a + (p.arcReductionCount || 0), 0);
+  const insolvencyPenalty = sim.insolvent ? 10 : 0;
+  const raw = delivery + alignment + efficiency + benefits;
+  const penalty = abandoned.length * 2 + expired.length * 1 + arcReductions * 2 + insolvencyPenalty;
   const final = Math.max(0, raw - penalty);
   const band =
     final >= 85 ? "Excellent" : final >= 70 ? "Good" :
     final >= 55 ? "Satisfactory" : final >= 40 ? "Poor" : "Needs Development";
   return {
-    delivery, alignment, efficiency, raw, penalty, final, band, wasted,
-    completed: completed.length, abandoned: abandoned.length, expired: expired.length,
+    delivery, alignment, efficiency, benefits, raw, penalty, final, band, wasted,
+    deliveryMax, alignmentMax, efficiencyMax,
+    completed: completed.length, abandoned: abandoned.length, expired: expired.length, arcReductions,
+    insolvent: !!sim.insolvent, insolvencyPenalty,
+    benefitsOn, benefitsBU, benefitsPotentialBU,
   };
 }
 
@@ -580,10 +698,43 @@ function generateAssessment(sim) {
   if (unresumed > 0)
     improvements.push(`${unresumed} project${unresumed !== 1 ? "s were" : " was"} suspended but never resumed. Suspended projects still accumulate inflation cost — resume or abandon them rather than leaving them on hold.`);
 
+  // ARC funding cuts
+  const arcReducedProjects = sim.projects.filter((p) => (p.arcReductionCount || 0) > 0);
+  if (arcReducedProjects.length) {
+    const stillReduced = arcReducedProjects.filter((p) => p.arcReduced).length;
+    improvements.push(
+      `ARC funding was cut 30% on ${arcReducedProjects.length} completed project${arcReducedProjects.length !== 1 ? "s" : ""} (${arcReducedProjects.map((p) => p.id).join(", ")}) to relieve funding shortfalls — the benefits delivered by ${arcReducedProjects.length !== 1 ? "these assets" : "this asset"} were negatively impacted as a result, on top of a ${(s.arcReductions || 0) * 2}-point score penalty` +
+      (stillReduced ? `, and ${stillReduced} project${stillReduced !== 1 ? "s remain" : " remains"} under-funded at run's end.` : ".")
+    );
+  }
+
+  // Full ARC cutoffs (decommissioned assets)
+  const cutoffProjects = sim.projects.filter((p) => p.arcCutoff);
+  if (cutoffProjects.length) {
+    improvements.push(
+      `${cutoffProjects.length} completed project${cutoffProjects.length !== 1 ? "s were" : " was"} fully cut off from ARC funding (${cutoffProjects.map((p) => p.id).join(", ")}) — ${cutoffProjects.length !== 1 ? "they were" : "it was"} decommissioned, ${cutoffProjects.length !== 1 ? "their" : "its"} full budget now counts as wasted spend, and ${cutoffProjects.length !== 1 ? "they generate" : "it generates"} negative benefits for the rest of the run. This is the costliest funding-shortfall response available — a partial 30% reduction, or resolving pressure earlier via slow/suspend, is cheaper.`
+    );
+  }
+
+  // Social benefits — how much of the completed portfolio's potential was actually realised
+  if (s.benefitsOn && s.benefitsPotentialBU > 0) {
+    const ratio = s.benefits / 15;
+    if (ratio >= 0.85)
+      strengths.push(`Social benefits were well protected — you captured ${pct(ratio)} of the ${s.benefitsPotentialBU.toFixed(0)} BU your completed assets were capable of generating.`);
+    else if (ratio < 0.5)
+      improvements.push(`Only ${pct(ratio)} of your completed assets' potential ${s.benefitsPotentialBU.toFixed(0)} BU was actually realised (${s.benefitsBU.toFixed(0)} BU delivered) — ARC funding cuts eroded the social benefits those assets were built to deliver. Completing projects earlier only pays off if you can keep their ARC funded afterwards.`);
+  }
+
+  // Insolvency
+  if (s.insolvent)
+    improvements.push(`The simulation ended early at Month ${sim.month} — no funds were available to continue, even after exhausting available levers (slow, suspend, abandon, and ARC funding cuts). This carries a 10-point score penalty. Earlier and more decisive cash-flow management would have kept the portfolio solvent through Month 60.`);
+
   // Key insight
   let keyInsight = "";
   const final = s.final || 0;
-  if (final >= 80)
+  if (s.insolvent)
+    keyInsight = "This run ended in insolvency — demand outran available funds with no remaining lever to close the gap. The lesson: resolve funding pressure early, before it compounds. Slowing, suspending, or reducing ARC funding earlier — or simply adding fewer projects at once — keeps the portfolio solvent all the way to Month 60.";
+  else if (final >= 80)
     keyInsight = "You managed the portfolio with the rigour of a senior PMO. Your score reflects disciplined alignment choices and effective cash-flow control across all 60 months.";
   else if (final >= 65)
     keyInsight = "A strong result with room to sharpen. The marginal gains available to you are in alignment discipline — consistently favouring higher-alignment selections compounds significantly over 60 months.";
@@ -1210,9 +1361,9 @@ function PortfolioReportModal({ sim, onClose }) {
    SETUP SCREEN
    ============================================================ */
 const DIFFICULTY_PRESETS = {
-  learning:  { annualRate: 0.02, fundingProfile: "flat",       budgetTightness: 1.2, politicalProjects: 0, concurrentCap: 0, approvalLag: 0, riskMultiplier: 0.5, blindAlignment: false, blindScore: false, arcEnabled: false },
-  standard:  { annualRate: 0.03, fundingProfile: "scurve",     budgetTightness: 1.5, politicalProjects: 2, concurrentCap: 0, approvalLag: 0, riskMultiplier: 1.0, blindAlignment: false, blindScore: false, arcEnabled: true  },
-  advanced:  { annualRate: 0.05, fundingProfile: "volatile",   budgetTightness: 1.8, politicalProjects: 4, concurrentCap: 8, approvalLag: 2, riskMultiplier: 1.5, blindAlignment: false, blindScore: true,  arcEnabled: true  },
+  learning:  { annualRate: 0.02, fundingProfile: "flat",       budgetTightness: 1.2, politicalProjects: 0, concurrentCap: 0, approvalLag: 0, riskMultiplier: 0.5, blindAlignment: false, blindScore: false, arcEnabled: false, benefitsEnabled: false },
+  standard:  { annualRate: 0.03, fundingProfile: "scurve",     budgetTightness: 1.5, politicalProjects: 2, concurrentCap: 0, approvalLag: 0, riskMultiplier: 1.0, blindAlignment: false, blindScore: false, arcEnabled: true,  benefitsEnabled: false },
+  advanced:  { annualRate: 0.05, fundingProfile: "volatile",   budgetTightness: 1.8, politicalProjects: 4, concurrentCap: 8, approvalLag: 2, riskMultiplier: 1.5, blindAlignment: false, blindScore: true,  arcEnabled: true,  benefitsEnabled: true  },
 };
 
 const FUNDING_LABELS = { flat: "Flat (equal each quarter)", scurve: "S-Curve (slow-peak-taper)", frontloaded: "Front-loaded (heavy early)", backloaded: "Back-loaded (heavy late)", volatile: "Volatile (±20% each quarter)" };
@@ -1266,8 +1417,10 @@ function SetupScreen({ onStart, onResume, hasSave }) {
   const [visibility,       setVisibility]       = useState("full");
   const [fundingFrequency, setFundingFrequency] = useState("3");
   const [arcEnabled,       setArcEnabled]       = useState(true);
+  const [benefitsEnabled,  setBenefitsEnabled]  = useState(false);
 
   const arcLocked = preset === "learning" || preset === "advanced";
+  const benefitsLocked = preset === "advanced";
 
   const applyPreset = (p) => {
     setPreset(p);
@@ -1282,6 +1435,7 @@ function SetupScreen({ onStart, onResume, hasSave }) {
     setRiskMultiplier(String(d.riskMultiplier));
     setVisibility(d.blindScore && d.blindAlignment ? "full_blind" : d.blindScore ? "blind_score" : d.blindAlignment ? "blind_align" : "full");
     setArcEnabled(d.arcEnabled);
+    setBenefitsEnabled(d.benefitsEnabled);
     setShowCustom(false);
   };
 
@@ -1299,6 +1453,7 @@ function SetupScreen({ onStart, onResume, hasSave }) {
     blindAlignment: visibility === "blind_align" || visibility === "full_blind",
     blindScore: visibility === "blind_score" || visibility === "full_blind",
     fundingFrequency: parseInt(fundingFrequency),
+    benefitsEnabled,
     arcEnabled,
   });
 
@@ -1386,6 +1541,37 @@ function SetupScreen({ onStart, onResume, hasSave }) {
             </button>
           </div>
 
+          {/* Social Benefits toggle — always visible, locked on for Advanced only */}
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+            background: T.panel2, border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 14px", marginBottom: 20,
+            opacity: benefitsLocked ? 0.65 : 1,
+          }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>Social Benefits</div>
+              <div style={{ fontSize: 11, color: T.muted, marginTop: 2, lineHeight: 1.4 }}>
+                {benefitsLocked
+                  ? "Always on for Advanced"
+                  : "Completed projects generate Benefit Units (BU/month), scored — cut ARC funding and they suffer"}
+              </div>
+            </div>
+            <button
+              onClick={() => !benefitsLocked && setBenefitsEnabled(!benefitsEnabled)}
+              disabled={benefitsLocked}
+              title={benefitsLocked ? "Locked by difficulty preset" : "Toggle Social Benefits"}
+              style={{
+                flexShrink: 0, width: 44, height: 24, borderRadius: 999, border: `1px solid ${T.line}`,
+                background: benefitsEnabled ? T.action : T.panel, position: "relative",
+                cursor: benefitsLocked ? "not-allowed" : "pointer", padding: 0, transition: "background .15s",
+              }}
+            >
+              <span style={{
+                position: "absolute", top: 2, left: benefitsEnabled ? 22 : 2, width: 18, height: 18, borderRadius: "50%",
+                background: "#fff", boxShadow: "0 1px 3px #0004", transition: "left .15s",
+              }} />
+            </button>
+          </div>
+
           {/* custom parameters — always visible when custom selected, collapsible otherwise */}
           {(showCustom || preset === "custom") && (
             <div style={{ borderTop: `1px solid ${T.line}`, paddingTop: 18, marginTop: 4 }}>
@@ -1450,7 +1636,7 @@ function SetupScreen({ onStart, onResume, hasSave }) {
         </Panel>
 
         {/* summary of active settings */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 8 }}>
           {[
             ["Inflation", annualRate.toFixed(1) + "%"],
             ["Funding", FUNDING_LABELS[fundingProfile]?.split(" ")[0]],
@@ -1458,6 +1644,7 @@ function SetupScreen({ onStart, onResume, hasSave }) {
             ["Political", politicalProjects + " forced"],
             ["Risk", RISK_LABELS[riskMultiplier]?.split(" ")[0]],
             ["Wallet", arcEnabled ? "On" : "Off"],
+            ["Benefits", benefitsEnabled ? "On" : "Off"],
           ].map(([l, v]) => (
             <div key={l} style={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
               <div style={{ fontSize: 10, color: T.faint, textTransform: "uppercase", letterSpacing: ".05em" }}>{l}</div>
@@ -1600,6 +1787,54 @@ function SuspendedRow({ sim, p, onResume, onAbandon }) {
   );
 }
 
+function CompletedRow({ sim, p, onRestore }) {
+  const current = arcMonthlyFor(p, sim.month, sim.annualRate);
+  const full = arcFullMonthlyFor(p, sim.month, sim.annualRate);
+  const canRestore = p.arcReduced && sim.availableBalance + 1e-6 >= (p.arcBacklog || 0);
+  const benefitsOn = !!sim.config?.benefitsEnabled;
+  const buCurrent = benefitsOn ? benefitMonthlyFor(p, sim.month) : 0;
+  return (
+    <div style={{ padding: "10px 12px", borderBottom: `1px solid ${T.lineSoft}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            <span style={{ color: T.faint, ...mono }}>{p.id}</span> {p.title}
+          </div>
+          <div style={{ fontSize: 10.5, color: T.faint, marginTop: 1 }}>{p.subCategory} · delivered M{p.completionMonth}</div>
+        </div>
+        <Badge color={T.completed}>Delivered</Badge>
+      </div>
+      {p.arcRate > 0 && (
+        p.arcReduced ? (
+          <div style={{ marginTop: 6 }}>
+            <div style={{ fontSize: 11, color: T.expired, ...mono }}>
+              ARC reduced 30% · {money(current)}/mo (full {money(full)}/mo) · owe {money(p.arcBacklog || 0)} to restore
+            </div>
+            <Btn kind="ok" disabled={!canRestore} onClick={() => onRestore(p.id)}
+              title={canRestore ? "Repay withheld ARC and restore full funding" : "Insufficient available balance to repay backlog"}
+              style={{ padding: "4px 9px", fontSize: 12, marginTop: 6 }}>
+              <RotateCcw size={13} /> Restore full funding
+            </Btn>
+          </div>
+        ) : (
+          <div style={{ fontSize: 11, color: T.arc, marginTop: 4, ...mono }}>ARC {money(current)}/mo ({pct(p.arcRate)})</div>
+        )
+      )}
+      {(p.arcReductionCount || 0) >= 2 && (
+        <div style={{ fontSize: 10.5, color: T.expired, marginTop: 4 }}>
+          Reduction lever exhausted (2/2 used) — next funding cut must abandon this project.
+        </div>
+      )}
+      {benefitsOn && p.buRate > 0 && (
+        <div style={{ fontSize: 11, color: buCurrent < 0 ? T.expired : T.completed, marginTop: 4, ...mono }}>
+          {buCurrent < 0 ? "Benefits negative" : p.arcReduced ? "Benefits reduced" : "Benefits"} {buCurrent.toFixed(1)} BU/mo
+          {" · "}cumulative {(p.buCumulative || 0).toFixed(1)} BU ({money((p.buCumulative || 0) * BU_VALUE)})
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ============================================================
    PROJECT PREVIEW MODAL — cash-flow impact before committing
    ============================================================ */
@@ -1630,6 +1865,7 @@ function ProjectPreviewModal({ sim, project, onAdd, onClose }) {
   const monthlyBurnIncrease = (withCash[sim.month]?.required ?? 0) - (baseCash[sim.month]?.required ?? 0);
   const projEnd = sim.month + project.durationPlanned;
   const alignColor = project.alignment >= 0.7 ? T.completed : project.alignment >= 0.4 ? T.suspended : T.expired;
+  const benefitsOn = !!sim.config?.benefitsEnabled;
 
   return (
     <Overlay onClose={onClose}>
@@ -1641,12 +1877,13 @@ function ProjectPreviewModal({ sim, project, onAdd, onClose }) {
         See how adding this project affects your cash flow before committing.
       </p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${benefitsOn ? 6 : 5}, 1fr)`, gap: 8, marginBottom: 14 }}>
         <Stat label="BAC (inflation-adj)" value={money(bac)} />
         <Stat label="Duration" value={`${project.durationPlanned}m`} sub={`ends M${projEnd}`} accent={projEnd > 60 ? T.expired : T.text} />
         {!blind && <Stat label="Strategic fit" value={pct(project.alignment)} accent={alignColor} />}
         <Stat label="Monthly burn increase" value={money(monthlyBurnIncrease)} accent={monthlyBurnIncrease > 0 ? T.suspended : T.text} />
         <Stat label="ARC rate" value={pct(project.arcRate)} sub={project.subCategory} accent={T.arc} />
+        {benefitsOn && <Stat label="Benefit rate" value={`${project.buRate} BU/mo`} sub={`≈ ${money(project.buRate * BU_VALUE)}/mo social value`} accent={T.completed} />}
       </div>
 
       <div style={{ marginBottom: 6, fontSize: 11.5, fontWeight: 700, color: T.text, textTransform: "uppercase", letterSpacing: ".05em" }}>
@@ -1734,6 +1971,7 @@ function QuickAddStrip({ sim, onAdd, onPreview }) {
 
 function AvailableTable({ sim, onAdd, onPreview }) {
   const blind = sim.config?.blindAlignment;
+  const benefitsOn = !!sim.config?.benefitsEnabled;
   const [sort, setSort] = useState(blind ? "bac" : "alignment");
   const [fAfford, setFAfford] = useState(true);
   const [fFinish, setFFinish] = useState(false);
@@ -1785,6 +2023,7 @@ function AvailableTable({ sim, onAdd, onPreview }) {
           <Hdr k="duration" w={56}>Dur</Hdr>
           <Hdr k="risk" w={70}>Risk c/d</Hdr>
           <th style={{ width: 60, textAlign: "left", padding: "6px 8px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", color: T.muted }}>ARC</th>
+          {benefitsOn && <th style={{ width: 70, textAlign: "left", padding: "6px 8px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", color: T.muted }}>Benefits</th>}
           <th style={{ width: 80 }} />
         </tr></thead>
         <tbody>
@@ -1799,6 +2038,7 @@ function AvailableTable({ sim, onAdd, onPreview }) {
               <td style={{ padding: "7px 8px", fontSize: 12.5, ...mono }}>{p.durationPlanned}m</td>
               <td style={{ padding: "7px 8px", fontSize: 11.5, color: T.muted, ...mono }}>{pct(p.costRisk)}/{pct(p.durRisk)}</td>
               <td style={{ padding: "7px 8px", fontSize: 11.5, color: T.arc, ...mono }}>{pct(p.arcRate)}</td>
+              {benefitsOn && <td style={{ padding: "7px 8px", fontSize: 11.5, color: T.completed, ...mono }}>{p.buRate} BU/mo</td>}
               <td style={{ padding: "7px 8px" }}>
                 <div style={{ display: "flex", gap: 4 }}>
                   <Btn onClick={() => onPreview(p)} title="Preview cash-flow impact" style={{ padding: "4px 8px" }}>
@@ -1953,10 +2193,20 @@ function HintModal({ sim, onClose, onApply }) {
 /* ============================================================
    SHORTFALL RESOLUTION  (blocking)
    ============================================================ */
-function ShortfallPanel({ sim, month, onSlow, onSuspend, onAbandon, onConfirm }) {
+function ShortfallPanel({ sim, month, onSlow, onSuspend, onAbandon, onReduceArc, onCutArc, onInsolvent, onConfirm }) {
   const demand = totalDemandAt(sim, month);
   const gap = demand - sim.availableBalance;
   const resolved = gap <= 1e-6;
+  const benefitsOn = !!sim.config?.benefitsEnabled;
+  const arcCandidates = sim.config?.arcEnabled
+    ? sim.projects
+        .filter((p) => p.state === "completed" && arcMonthlyFor(p, month, sim.annualRate) > 0)
+        .map((p) => ({ p, action: (p.arcReductionCount || 0) >= 2 ? "abandon" : !p.arcReduced ? "reduce" : null }))
+        .filter((c) => c.action)
+        .sort((a, b) => arcMonthlyFor(b.p, month, sim.annualRate) - arcMonthlyFor(a.p, month, sim.annualRate))
+    : [];
+  const noMoreLevers = !resolved && actives(sim).length === 0 && arcCandidates.length === 0;
+  const [confirmEnd, setConfirmEnd] = useState(false);
   return (
     <Overlay onClose={() => {}}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
@@ -1987,7 +2237,69 @@ function ShortfallPanel({ sim, month, onSlow, onSuspend, onAbandon, onConfirm })
             </div>
           </div>
         ))}
+        {actives(sim).length === 0 && (
+          <div style={{ padding: "10px 12px", fontSize: 12, color: T.faint }}>No active projects to slow, suspend, or abandon.</div>
+        )}
       </div>
+      {arcCandidates.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: T.arc, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>
+            Completed projects consuming ARC
+          </div>
+          <p style={{ fontSize: 12, color: T.muted, margin: "0 0 8px" }}>
+            Cutting ARC funding 30% frees cash immediately but{benefitsOn ? " cuts that asset's benefits to 40% of normal" : " degrades that asset's ongoing benefits"} and costs 2 score points each time. A project can only be reduced twice in total — after that, the lever is exhausted and the only option left is to abandon it outright, which decommissions it completely{benefitsOn ? " and flips its benefits negative" : ""}.
+          </p>
+          <div style={{ maxHeight: 180, overflowY: "auto", border: `1px solid ${T.line}`, borderRadius: 10 }}>
+            {arcCandidates.map(({ p, action }) => (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 10px", borderBottom: `1px solid ${T.lineSoft}` }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    <span style={{ color: T.faint, ...mono }}>{p.id}</span> {p.title}
+                  </div>
+                  <div style={{ fontSize: 11, color: T.muted, ...mono }}>
+                    {money(arcMonthlyFor(p, month, sim.annualRate))}/mo ARC · {p.subCategory}
+                    {p.arcReductionCount ? ` · reduced ${p.arcReductionCount}× so far` : ""}
+                  </div>
+                </div>
+                {action === "abandon" ? (
+                  <Btn kind="danger" onClick={() => onCutArc(p.id)}
+                    title="Reduction lever exhausted (2/2 used) — abandon the project (moves to Abandoned, full BAC counts as wasted, benefits go negative)"
+                    style={{ padding: "3px 7px", fontSize: 11 }}>
+                    Abandon project
+                  </Btn>
+                ) : (
+                  <Btn kind="warn" onClick={() => onReduceArc(p.id)} title="Reduce ARC funding 30% (−2 pts)" style={{ padding: "3px 7px", fontSize: 11 }}>−30% ARC (−2 pts)</Btn>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {!resolved && (
+        <div style={{ marginTop: 14, background: T.expired + "14", border: `1px solid ${T.expired}55`, borderRadius: 10, padding: "10px 12px" }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: T.expired, marginBottom: 4 }}>
+            {noMoreLevers ? "No further levers are available." : "Still short?"}
+          </div>
+          <p style={{ fontSize: 12, color: T.muted, margin: "0 0 8px", lineHeight: 1.5 }}>
+            {noMoreLevers
+              ? "Every active project has been slowed, suspended, or abandoned, and every eligible completed project's ARC funding has been cut. If the gap still can't be closed, the simulation cannot continue."
+              : "If no combination of the actions above can close the gap, you can end the simulation here rather than stay stuck."}
+          </p>
+          {confirmEnd ? (
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ fontSize: 12, color: T.expired }}>End the run now? This cannot be undone.</span>
+              <Btn kind="danger" onClick={() => onInsolvent()} style={{ padding: "4px 9px", fontSize: 12 }}>
+                <CheckCheck size={13} /> Confirm − end simulation (−10 pts)
+              </Btn>
+              <Btn onClick={() => setConfirmEnd(false)} style={{ padding: "4px 8px", fontSize: 12 }}><X size={12} /></Btn>
+            </div>
+          ) : (
+            <Btn kind="danger" onClick={() => setConfirmEnd(true)} style={{ padding: "4px 9px", fontSize: 12 }}>
+              <AlertTriangle size={13} /> End simulation — no funds available (−10 pts)
+            </Btn>
+          )}
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
         <Btn kind="primary" disabled={!resolved} onClick={onConfirm}>
           Confirm & advance <ArrowRight size={14} />
@@ -2241,6 +2553,10 @@ function KpiTab({ sim }) {
   const arcOn = !!sim.config?.arcEnabled;
   const arcCumulative = sim.history.reduce((a, h) => a + (h.arc || 0), 0);
   const arcThisMonth = arcOn ? arcDemandAt(sim, sim.month) : 0;
+  const benefitsOn = !!sim.config?.benefitsEnabled;
+  const benefitTracked = sim.projects.filter(isBenefitTracked);
+  const benefitsCumulative = benefitsOn ? benefitTracked.reduce((a, p) => a + (p.buCumulative || 0), 0) : 0;
+  const benefitsThisMonth = benefitsOn ? benefitTracked.reduce((a, p) => a + benefitMonthlyFor(p, sim.month), 0) : 0;
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px,1fr))", gap: 12 }}>
       <Panel style={{ padding: 14, gridColumn: "span 1" }}>
@@ -2260,6 +2576,12 @@ function KpiTab({ sim }) {
       {arcOn
         ? <Stat label="ARC this month" value={money(arcThisMonth)} sub={`cumulative ${money(arcCumulative)} paid`} accent={T.arc} />
         : <Stat label="Integrated Budget Wallet" value="Off" sub="no recurring cost this run" />}
+      {benefitsOn
+        ? <>
+            <Stat label="Benefits generated" value={`${benefitsCumulative.toFixed(1)} BU`} sub={`${money(benefitsCumulative * BU_VALUE)} social value`} accent={benefitsCumulative < 0 ? T.expired : T.completed} />
+            <Stat label="Benefits this month" value={`${benefitsThisMonth.toFixed(1)} BU`} accent={benefitsThisMonth < 0 ? T.expired : T.completed} />
+          </>
+        : <Stat label="Social Benefits" value="Off" sub="no benefit tracking this run" />}
     </div>
   );
 }
@@ -2274,7 +2596,7 @@ const Chip = ({ active, onClick, children, color }) => (
 /* ============================================================
    DECISION TIMELINE — visual dot-on-axis view of all decisions
    ============================================================ */
-const DECISION_SYMBOLS = { add: "+", slow: "↓", speed: "↑", suspend: "⏸", resume: "↩", abandon: "✕" };
+const DECISION_SYMBOLS = { add: "+", slow: "↓", speed: "↑", suspend: "⏸", resume: "↩", abandon: "✕", arc_reduce: "▽", arc_restore: "△", arc_cutoff: "⊘" };
 
 function DecisionTimeline({ decisions }) {
   if (!decisions.length) return <div style={{ color: T.faint, fontSize: 12, padding: "8px 0" }}>No decisions recorded.</div>;
@@ -2379,17 +2701,30 @@ function Debrief({ sim, onRestart }) {
           · <Badge color={T.faint}>{PRESET_LABELS[sim.config?.preset] || "Custom"}</Badge>
         </p>
 
+        {s.insolvent && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, background: T.expired + "14", border: `1px solid ${T.expired}55`, borderRadius: 10, padding: "10px 14px", marginBottom: 16 }}>
+            <AlertTriangle size={16} color={T.expired} />
+            <span style={{ fontSize: 13, color: T.expired, fontWeight: 600 }}>
+              Simulation ended early at Month {sim.endMonth} of 60 — no funds were available to continue (−10 pts).
+            </span>
+          </div>
+        )}
+
         <Panel style={{ padding: 24, display: "flex", gap: 28, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 64, fontWeight: 800, color: bandColor, lineHeight: 1, ...mono }}>{Math.round(s.final)}</div>
             <Badge color={bandColor}>{s.band}</Badge>
           </div>
           <div style={{ flex: 1, minWidth: 240, display: "grid", gap: 10 }}>
-            <ScoreBar label="Delivery" value={s.delivery} max={40} color={T.completed} note={`${s.completed} of ${sim.maxComp} possible`} />
-            <ScoreBar label="Strategic alignment" value={s.alignment} max={35} color={T.action} note={`avg ${pct(deliveredAlign)} of completed`} />
-            <ScoreBar label="Budget efficiency" value={s.efficiency} max={25} color={T.suspended} note={`${pct(s.wasted)} wasted`} />
+            <ScoreBar label="Delivery" value={s.delivery} max={s.deliveryMax} color={T.completed} note={`${s.completed} of ${sim.maxComp} possible`} />
+            <ScoreBar label="Strategic alignment" value={s.alignment} max={s.alignmentMax} color={T.action} note={`avg ${pct(deliveredAlign)} of completed`} />
+            <ScoreBar label="Budget efficiency" value={s.efficiency} max={s.efficiencyMax} color={T.suspended} note={`${pct(s.wasted)} wasted`} />
+            {s.benefitsOn && (
+              <ScoreBar label="Social benefits" value={s.benefits} max={15} color={T.arc}
+                note={`${s.benefitsBU.toFixed(1)} of ${s.benefitsPotentialBU.toFixed(1)} potential BU`} />
+            )}
             <div style={{ fontSize: 12, color: T.muted, ...mono, borderTop: `1px solid ${T.lineSoft}`, paddingTop: 8 }}>
-              raw {s.raw.toFixed(1)} − penalties {s.penalty} (abandoned {s.abandoned}×2, expired {s.expired}×1) = <b style={{ color: T.text }}>{s.final.toFixed(1)}</b>
+              raw {s.raw.toFixed(1)} − penalties {s.penalty} (abandoned {s.abandoned}×2, expired {s.expired}×1{s.arcReductions ? `, ARC-reduced ${s.arcReductions}×2` : ""}{s.insolvent ? `, insolvency −10` : ""}) = <b style={{ color: T.text }}>{s.final.toFixed(1)}</b>
             </div>
           </div>
         </Panel>
@@ -2860,6 +3195,7 @@ export default function App() {
   const activeList = actives(sim);
   const suspendedList = sim.projects.filter((p) => p.state === "suspended");
   const pendingList = sim.projects.filter((p) => p.state === "pending");
+  const completedList = sim.projects.filter((p) => p.state === "completed");
   const blindScore = sim.config?.blindScore;
   const demandThisMonth = totalDemandAt(sim, sim.month);
   const advanceKind = demandThisMonth > sim.availableBalance ? "danger" : demandThisMonth > sim.availableBalance * 0.8 ? "warn" : "primary";
@@ -2986,6 +3322,15 @@ export default function App() {
             </Section>
           )}
 
+          {sim.config?.arcEnabled && completedList.length > 0 && (
+            <Section title="Completed" count={completedList.length} color={T.completed} defaultOpen={false}>
+              {completedList.map((p) => (
+                <CompletedRow key={p.id} sim={sim} p={p}
+                  onRestore={(id) => commit((n) => restoreArcFunding(n, id))} />
+              ))}
+            </Section>
+          )}
+
           <Section title="Available pool" count={sim.projects.filter((p) => p.state === "available").length} color={T.available}>
             <AvailableTable sim={sim} onAdd={(id) => commit((n) => addProject(n, id))} onPreview={(p) => setPreviewProject(p)} />
           </Section>
@@ -3040,6 +3385,9 @@ export default function App() {
           onSlow={(id, s) => commit((n) => slowProject(n, id, s))}
           onSuspend={(id) => commit((n) => suspendProject(n, id))}
           onAbandon={(id) => commit((n) => abandonProject(n, id))}
+          onReduceArc={(id) => commit((n) => reduceArcFunding(n, id))}
+          onCutArc={(id) => commit((n) => cutArcCompletely(n, id))}
+          onInsolvent={() => { setShortfall(false); commit((n) => endInsolvent(n)); }}
           onConfirm={doAdvance} />
       )}
       {showReport && (
