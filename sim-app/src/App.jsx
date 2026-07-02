@@ -3049,6 +3049,10 @@ function PortfolioDashboard({ sim }) {
   const arcOn = !!sim.config?.arcEnabled;
   const arcCumulative = sim.history.reduce((a, h) => a + (h.arc || 0), 0);
   const arcRunRate = arcOn ? arcDemandAt(sim, sim.month) : 0;
+  const benefitsOn = !!sim.config?.benefitsEnabled;
+  const benefitTracked = sim.projects.filter(isBenefitTracked);
+  const benefitsCumulative = benefitsOn ? benefitTracked.reduce((a, p) => a + (p.buCumulative || 0), 0) : 0;
+  const benefitsPotential = benefitsOn ? benefitTracked.reduce((a, p) => a + benefitPotentialFor(p, sim.month), 0) : 0;
 
   const KpiCard = ({ icon: Icon, label, bigNum, bigColor, sub, barValue, barColor }) => (
     <div style={{ flex: 1, padding: "10px 16px", borderRight: `1px solid ${T.line}` }}>
@@ -3101,6 +3105,17 @@ function PortfolioDashboard({ sim }) {
           sub={`${money(arcRunRate)}/mo · ${completed.length} completed project${completed.length !== 1 ? "s" : ""}`}
           barValue={sim.totalBudget > 0 ? Math.min(1, arcCumulative / sim.totalBudget) : 0}
           barColor={T.arc}
+        />
+      )}
+      {benefitsOn && (
+        <KpiCard
+          icon={Flag}
+          label="Social Benefits"
+          bigNum={`${benefitsCumulative.toFixed(0)} BU`}
+          bigColor={benefitsCumulative < 0 ? T.expired : T.completed}
+          sub={`${money(benefitsCumulative * BU_VALUE)} social value · ${benefitTracked.length} tracked`}
+          barValue={benefitsPotential > 0 ? Math.max(0, Math.min(1, benefitsCumulative / benefitsPotential)) : 0}
+          barColor={benefitsCumulative < 0 ? T.expired : T.completed}
         />
       )}
     </div>
@@ -3322,7 +3337,7 @@ export default function App() {
             </Section>
           )}
 
-          {sim.config?.arcEnabled && completedList.length > 0 && (
+          {(sim.config?.arcEnabled || sim.config?.benefitsEnabled) && completedList.length > 0 && (
             <Section title="Completed" count={completedList.length} color={T.completed} defaultOpen={false}>
               {completedList.map((p) => (
                 <CompletedRow key={p.id} sim={sim} p={p}
