@@ -1998,13 +1998,11 @@ function AvailableTable({ sim, onAdd, onPreview }) {
     return 0;
   });
   const alignColor = (a) => a >= 0.7 ? T.completed : a >= 0.4 ? T.suspended : T.expired;
-  const Hdr = ({ k, children, w }) => (
-    <th onClick={() => (!blind || k !== "alignment") && setSort(k)} style={{ cursor: (blind && k === "alignment") ? "default" : "pointer", textAlign: "left", padding: "6px 8px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", color: sort === k ? T.action : T.muted, width: w }}>
-      {children}{sort === k ? " ▾" : ""}
-    </th>
-  );
+  const SORTS = blind
+    ? [["bac", "BAC"], ["duration", "Duration"], ["risk", "Risk"]]
+    : [["alignment", "Alignment"], ["bac", "BAC"], ["duration", "Duration"], ["risk", "Risk"]];
   return (
-    <div style={{ overflowX: "auto" }}>
+    <div>
       {/* filter chips */}
       <div style={{ display: "flex", gap: 6, padding: "6px 8px 4px", flexWrap: "wrap", alignItems: "center" }}>
         <Chip active={fAfford} onClick={() => setFAfford(!fAfford)}>Affordable</Chip>
@@ -2014,48 +2012,41 @@ function AvailableTable({ sim, onAdd, onPreview }) {
           {rows.length !== allRows.length ? `${rows.length} of ${allRows.length}` : `${allRows.length} projects`}
         </span>
       </div>
+      {/* sort chips */}
+      <div style={{ display: "flex", gap: 6, padding: "0 8px 6px", flexWrap: "wrap", alignItems: "center" }}>
+        <span style={{ fontSize: 10, color: T.faint, textTransform: "uppercase", letterSpacing: ".05em" }}>Sort</span>
+        {SORTS.map(([k, label]) => (
+          <Chip key={k} active={sort === k} onClick={() => setSort(k)}>{label}</Chip>
+        ))}
+      </div>
       {capReached && <div style={{ fontSize: 11.5, color: T.suspended, padding: "6px 8px", background: T.suspended + "14", borderRadius: 6, margin: "4px 8px 6px" }}>Concurrent cap reached ({liveLive}/{cap}) — complete or suspend a project before adding more.</div>}
-      <table style={{ width: "100%", borderCollapse: "collapse" }}>
-        <thead><tr style={{ borderBottom: `1px solid ${T.line}` }}>
-          <Hdr k="title">Project</Hdr>
-          {!blind && <Hdr k="alignment" w={70}>Align</Hdr>}
-          <Hdr k="bac" w={86}>BAC</Hdr>
-          <Hdr k="duration" w={56}>Dur</Hdr>
-          <Hdr k="risk" w={70}>Risk c/d</Hdr>
-          <th style={{ width: 60, textAlign: "left", padding: "6px 8px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", color: T.muted }}>ARC</th>
-          {benefitsOn && <th style={{ width: 70, textAlign: "left", padding: "6px 8px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", color: T.muted }}>Benefits</th>}
-          <th style={{ width: 80 }} />
-        </tr></thead>
-        <tbody>
-          {rows.map((p) => (
-            <tr key={p.id} style={{ borderBottom: `1px solid ${T.lineSoft}`, opacity: (p.afford && !capReached) ? 1 : 0.5 }}>
-              <td style={{ padding: "7px 8px", fontSize: 12.5 }}>
-                <div><span style={{ color: T.faint, ...mono }}>{p.id}</span> {p.title}</div>
-                <div style={{ fontSize: 10.5, color: T.faint, marginTop: 1 }}>{p.subCategory}</div>
-              </td>
-              {!blind && <td style={{ padding: "7px 8px" }}><Badge color={alignColor(p.alignment)}>{pct(p.alignment)}</Badge></td>}
-              <td style={{ padding: "7px 8px", fontSize: 12.5, ...mono }}>{money(p.bacShown)}</td>
-              <td style={{ padding: "7px 8px", fontSize: 12.5, ...mono }}>{p.durationPlanned}m</td>
-              <td style={{ padding: "7px 8px", fontSize: 11.5, color: T.muted, ...mono }}>{pct(p.costRisk)}/{pct(p.durRisk)}</td>
-              <td style={{ padding: "7px 8px", fontSize: 11.5, color: T.arc, ...mono }}>{pct(p.arcRate)}</td>
-              {benefitsOn && <td style={{ padding: "7px 8px", fontSize: 11.5, color: T.completed, ...mono }}>{p.buRate} BU/mo</td>}
-              <td style={{ padding: "7px 8px" }}>
-                <div style={{ display: "flex", gap: 4 }}>
-                  <Btn onClick={() => onPreview(p)} title="Preview cash-flow impact" style={{ padding: "4px 8px" }}>
-                    <Eye size={13} />
-                  </Btn>
-                  <Btn kind="primary" disabled={!p.afford || capReached} onClick={() => onAdd(p.id)} title={capReached ? "Concurrent cap reached" : p.afford ? "Add to portfolio" : "Exceeds available funds"} style={{ padding: "4px 8px" }}>
-                    <Plus size={13} />
-                  </Btn>
-                </div>
-              </td>
-            </tr>
-          ))}
-          {rows.length === 0 && (
-            <tr><td colSpan={blind ? 6 : 7} style={{ padding: 16, textAlign: "center", color: T.faint, fontSize: 12 }}>No projects left in the pool.</td></tr>
-          )}
-        </tbody>
-      </table>
+      {rows.length === 0 && <Empty msg="No projects left in the pool." />}
+      {rows.map((p) => (
+        <div key={p.id} style={{ padding: "10px 12px", borderBottom: `1px solid ${T.lineSoft}`, opacity: (p.afford && !capReached) ? 1 : 0.5 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                <span style={{ color: T.faint, ...mono }}>{p.id}</span> {p.title}
+              </div>
+              <div style={{ fontSize: 11, color: T.muted, marginTop: 2, ...mono }}>
+                BAC {money(p.bacShown)} · {p.durationPlanned}m
+              </div>
+              <div style={{ fontSize: 10.5, color: T.faint, marginTop: 1 }}>
+                {p.subCategory} · Risk {pct(p.costRisk)}/{pct(p.durRisk)} · ARC {pct(p.arcRate)}{benefitsOn ? ` · ${p.buRate} BU/mo` : ""}
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+              {!blind && <Badge color={alignColor(p.alignment)}>{pct(p.alignment)}</Badge>}
+              <Btn onClick={() => onPreview(p)} title="Preview cash-flow impact" style={{ padding: "4px 8px" }}>
+                <Eye size={13} />
+              </Btn>
+              <Btn kind="primary" disabled={!p.afford || capReached} onClick={() => onAdd(p.id)} title={capReached ? "Concurrent cap reached" : p.afford ? "Add to portfolio" : "Exceeds available funds"} style={{ padding: "4px 8px" }}>
+                <Plus size={13} />
+              </Btn>
+            </div>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
