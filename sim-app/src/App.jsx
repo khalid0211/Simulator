@@ -854,8 +854,8 @@ async function loadSession() {
 /* ============================================================
    SMALL UI PRIMITIVES
    ============================================================ */
-const Panel = ({ children, style }) => (
-  <div style={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 12, ...style }}>{children}</div>
+const Panel = ({ children, style, className }) => (
+  <div className={className} style={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 12, ...style }}>{children}</div>
 );
 const Badge = ({ children, color }) => (
   <span style={{
@@ -1694,11 +1694,10 @@ function ActiveRow({ sim, p, onSlow, onSpeed, onSuspend, onAbandon }) {
 
   return (
     <div style={{ padding: "10px 12px", borderBottom: `1px solid ${T.lineSoft}`, borderLeft: `3px solid ${leftBorderColor}` }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "flex", alignItems: "center", gap: 6 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             <span style={{ color: T.faint, ...mono }}>{p.id}</span> {p.title}
-            {p.political && <Badge color={T.expired}>{locked ? `🔒 locked to M${p.lockUntil}` : "political"}</Badge>}
           </div>
           <div style={{ fontSize: 11, color: T.muted, marginTop: 2, ...mono }}>
             BAC {money(p.bacCurrent)} · spend {money(thisSpend)}/mo · ends M{projEnd > 60 ? `${projEnd}⚠` : projEnd}
@@ -1706,21 +1705,25 @@ function ActiveRow({ sim, p, onSlow, onSpeed, onSuspend, onAbandon }) {
           <div style={{ fontSize: 10.5, color: T.faint, marginTop: 1 }}>
             {p.subCategory} · ARC {pct(p.arcRate)}
           </div>
-          {/* status badges */}
+          {/* status badges — political/locked now lives here, not in the title */}
           <div style={{ display: "flex", gap: 5, marginTop: 4, flexWrap: "wrap" }}>
+            {p.political && <Badge color={T.expired}>{locked ? `🔒 Locked to M${p.lockUntil}` : "Political"}</Badge>}
             {scheduleStatus === "critical" && <Badge color={T.expired}>⚠ Expires M{projEnd}</Badge>}
             {scheduleStatus === "warning" && <Badge color={T.suspended}>Late risk M{projEnd}</Badge>}
             {burnStatus === "warning" && <Badge color={T.suspended}>High burn</Badge>}
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, flexShrink: 0 }}>
           {!blind && (
-            <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 9, color: T.muted, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 2 }}>Strategic</div>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
               <Badge color={alignColor}><Target size={10} style={{ display: "inline", verticalAlign: "middle", marginRight: 2 }} />{pct(p.alignment)}</Badge>
+              <div style={{ fontSize: 9, color: T.muted, textTransform: "uppercase", letterSpacing: ".05em" }}>Strategic</div>
             </div>
           )}
-          <Badge color={T.active}>{pct(prog)}</Badge>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+            <Badge color={T.active}>{pct(prog)}</Badge>
+            <div style={{ fontSize: 9, color: T.muted, textTransform: "uppercase", letterSpacing: ".05em" }}>Done</div>
+          </div>
         </div>
       </div>
       <div style={{ marginTop: 8 }}><ProgressBar value={prog} color={T.active} /></div>
@@ -2002,9 +2005,9 @@ function AvailableTable({ sim, onAdd, onPreview }) {
     ? [["bac", "BAC"], ["duration", "Duration"], ["risk", "Risk"]]
     : [["alignment", "Alignment"], ["bac", "BAC"], ["duration", "Duration"], ["risk", "Risk"]];
   return (
-    <div>
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
       {/* filter chips */}
-      <div style={{ display: "flex", gap: 6, padding: "6px 8px 4px", flexWrap: "wrap", alignItems: "center" }}>
+      <div style={{ display: "flex", flexShrink: 0, gap: 6, padding: "6px 8px 4px", flexWrap: "wrap", alignItems: "center" }}>
         <Chip active={fAfford} onClick={() => setFAfford(!fAfford)}>Affordable</Chip>
         <Chip active={fFinish} onClick={() => setFFinish(!fFinish)}>Can finish</Chip>
         {!blind && <Chip active={fAlign} onClick={() => setFAlign(!fAlign)}>High alignment ≥70%</Chip>}
@@ -2013,14 +2016,15 @@ function AvailableTable({ sim, onAdd, onPreview }) {
         </span>
       </div>
       {/* sort chips */}
-      <div style={{ display: "flex", gap: 6, padding: "0 8px 6px", flexWrap: "wrap", alignItems: "center" }}>
+      <div style={{ display: "flex", flexShrink: 0, gap: 6, padding: "0 8px 6px", flexWrap: "wrap", alignItems: "center" }}>
         <span style={{ fontSize: 10, color: T.faint, textTransform: "uppercase", letterSpacing: ".05em" }}>Sort</span>
         {SORTS.map(([k, label]) => (
           <Chip key={k} active={sort === k} onClick={() => setSort(k)}>{label}</Chip>
         ))}
       </div>
-      {capReached && <div style={{ fontSize: 11.5, color: T.suspended, padding: "6px 8px", background: T.suspended + "14", borderRadius: 6, margin: "4px 8px 6px" }}>Concurrent cap reached ({liveLive}/{cap}) — complete or suspend a project before adding more.</div>}
+      {capReached && <div style={{ flexShrink: 0, fontSize: 11.5, color: T.suspended, padding: "6px 8px", background: T.suspended + "14", borderRadius: 6, margin: "4px 8px 6px" }}>Concurrent cap reached ({liveLive}/{cap}) — complete or suspend a project before adding more.</div>}
       {rows.length === 0 && <Empty msg="No projects left in the pool." />}
+      <div className="sim-pool-scroll" style={{ flex: 1, minHeight: 120, overflowY: "auto" }}>
       {rows.map((p) => (
         <div key={p.id} style={{ padding: "10px 12px", borderBottom: `1px solid ${T.lineSoft}`, opacity: (p.afford && !capReached) ? 1 : 0.5 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
@@ -2047,21 +2051,28 @@ function AvailableTable({ sim, onAdd, onPreview }) {
           </div>
         </div>
       ))}
+      </div>
     </div>
   );
 }
 
-function Section({ title, count, color, children, defaultOpen = true }) {
+function Section({ title, count, color, children, defaultOpen = true, fill = false }) {
   const [open, setOpen] = useState(defaultOpen);
+  const outer = fill && open
+    ? { marginBottom: 12, flexShrink: 0, flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }
+    : { marginBottom: 12, flexShrink: 0 };
+  const panelFill = fill && open
+    ? { marginTop: 6, overflow: "hidden", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }
+    : { marginTop: 6, overflow: "hidden" };
   return (
-    <div style={{ marginBottom: 12 }}>
-      <button onClick={() => setOpen(!open)} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "transparent", border: "none", cursor: "pointer", padding: "4px 2px" }}>
+    <div style={outer}>
+      <button onClick={() => setOpen(!open)} style={{ width: "100%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", background: "transparent", border: "none", cursor: "pointer", padding: "4px 2px" }}>
         <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, fontWeight: 700, color: T.text, textTransform: "uppercase", letterSpacing: ".05em" }}>
           <ChevronRight size={15} style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform .15s", color: T.muted }} />
           {title} {count != null && <span style={{ color, ...mono }}>{count}</span>}
         </span>
       </button>
-      {open && <Panel style={{ marginTop: 6, overflow: "hidden" }}>{children}</Panel>}
+      {open && <Panel style={panelFill}>{children}</Panel>}
     </div>
   );
 }
@@ -2353,29 +2364,39 @@ function projectCashflow(sim) {
 function CashFlowTab({ sim }) {
   const data = useMemo(() => projectCashflow(sim), [sim]);
   const arcOn = !!sim.config?.arcEnabled;
+  const required = totalDemandAt(sim, sim.month);
+  const avail = sim.availableBalance;
+  const net = avail - required;
   return (
-    <div style={{ height: 360, paddingBottom: 28 }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
-          <CartesianGrid stroke={T.lineSoft} vertical={false} />
-          <XAxis dataKey="month" stroke={T.faint} fontSize={11} tickLine={false} />
-          <YAxis stroke={T.faint} fontSize={11} tickLine={false} width={44} />
-          <Tooltip contentStyle={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12 }}
-            labelStyle={{ color: T.muted }} formatter={(v, n) => [money(v), n === "required" ? "Required" : n === "arc" ? "ARC (recurring)" : "Available"]} labelFormatter={(m) => `Month ${m}`} />
-          {[3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57].map((m) => (
-            <ReferenceLine key={m} x={m + 1} stroke={T.lineSoft} strokeDasharray="2 4" />
-          ))}
-          <ReferenceLine x={sim.month} stroke={T.action} strokeWidth={1.5} />
-          <Line type="monotone" dataKey="available" stroke={T.completed} strokeWidth={2} dot={false} />
-          <Line type="monotone" dataKey="required" stroke={T.expired} strokeWidth={2} dot={false} />
-          {arcOn && <Line type="monotone" dataKey="arc" stroke={T.arc} strokeWidth={2} dot={false} />}
-        </LineChart>
-      </ResponsiveContainer>
-      <div style={{ display: "flex", gap: 16, justifyContent: "center", fontSize: 12, color: T.muted, marginTop: 4 }}>
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <div className="sim-chart" style={{ flex: 1, minHeight: 0, maxHeight: 480 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
+            <CartesianGrid stroke={T.lineSoft} vertical={false} />
+            <XAxis dataKey="month" stroke={T.faint} fontSize={11} tickLine={false} />
+            <YAxis stroke={T.faint} fontSize={11} tickLine={false} width={44} />
+            <Tooltip contentStyle={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12 }}
+              labelStyle={{ color: T.muted }} formatter={(v, n) => [money(v), n === "required" ? "Required" : n === "arc" ? "ARC (recurring)" : "Available"]} labelFormatter={(m) => `Month ${m}`} />
+            {[3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57].map((m) => (
+              <ReferenceLine key={m} x={m + 1} stroke={T.lineSoft} strokeDasharray="2 4" />
+            ))}
+            <ReferenceLine x={sim.month} stroke={T.action} strokeWidth={1.5} />
+            <Line type="monotone" dataKey="available" stroke={T.completed} strokeWidth={2} dot={false} />
+            <Line type="monotone" dataKey="required" stroke={T.expired} strokeWidth={2} dot={false} />
+            {arcOn && <Line type="monotone" dataKey="arc" stroke={T.arc} strokeWidth={2} dot={false} />}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <div style={{ flexShrink: 0, display: "flex", gap: 16, justifyContent: "center", fontSize: 12, color: T.muted, marginTop: 8 }}>
         <span style={{ color: T.completed }}>● Available funds</span>
         <span style={{ color: T.expired }}>● Required spend</span>
         {arcOn && <span style={{ color: T.arc }}>● ARC (recurring)</span>}
         <span style={{ color: T.action }}>▏Current month</span>
+      </div>
+      <div style={{ flexShrink: 0, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 12 }}>
+        <Stat label={`Required · M${sim.month}`} value={money(required)} accent={required > avail ? T.expired : T.text} />
+        <Stat label="Available" value={money(avail)} accent={T.completed} />
+        <Stat label="Net this month" value={`${net >= 0 ? "+" : ""}${money(net)}`} accent={net >= 0 ? T.completed : T.expired} />
       </div>
     </div>
   );
@@ -2412,24 +2433,26 @@ function FundsTab({ sim }) {
   const data = useMemo(() => monthlyFunds(sim), [sim]);
   const arcOn = !!sim.config?.arcEnabled;
   return (
-    <div style={{ height: 360, paddingBottom: 28 }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} margin={{ top: 8, right: 12, left: -8, bottom: 0 }} barCategoryGap="30%">
-          <CartesianGrid stroke={T.lineSoft} vertical={false} />
-          <XAxis dataKey="month" stroke={T.faint} fontSize={11} tickLine={false} />
-          <YAxis stroke={T.faint} fontSize={11} tickLine={false} width={44} />
-          <Tooltip contentStyle={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12 }}
-            labelStyle={{ color: T.muted }} formatter={(v, n) => [money(v), n === "available" ? "Funds Available" : n === "arc" ? "ARC (recurring)" : "Funds Used"]} labelFormatter={(m) => `Month ${m}`} />
-          {[3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57].map((m) => (
-            <ReferenceLine key={m} x={m + 1} stroke={T.lineSoft} strokeDasharray="2 4" />
-          ))}
-          <ReferenceLine x={sim.month} stroke={T.action} strokeWidth={1.5} />
-          <Bar dataKey="available" fill={T.completed} opacity={0.75} radius={[2, 2, 0, 0]} />
-          <Bar dataKey="used" fill={T.expired} opacity={0.75} radius={[2, 2, 0, 0]} />
-          {arcOn && <Bar dataKey="arc" fill={T.arc} opacity={0.75} radius={[2, 2, 0, 0]} />}
-        </BarChart>
-      </ResponsiveContainer>
-      <div style={{ display: "flex", gap: 16, justifyContent: "center", fontSize: 12, color: T.muted, marginTop: 4 }}>
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <div className="sim-chart" style={{ flex: 1, minHeight: 0, maxHeight: 480 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={data} margin={{ top: 8, right: 12, left: -8, bottom: 0 }} barCategoryGap="30%">
+            <CartesianGrid stroke={T.lineSoft} vertical={false} />
+            <XAxis dataKey="month" stroke={T.faint} fontSize={11} tickLine={false} />
+            <YAxis stroke={T.faint} fontSize={11} tickLine={false} width={44} />
+            <Tooltip contentStyle={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12 }}
+              labelStyle={{ color: T.muted }} formatter={(v, n) => [money(v), n === "available" ? "Funds Available" : n === "arc" ? "ARC (recurring)" : "Funds Used"]} labelFormatter={(m) => `Month ${m}`} />
+            {[3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57].map((m) => (
+              <ReferenceLine key={m} x={m + 1} stroke={T.lineSoft} strokeDasharray="2 4" />
+            ))}
+            <ReferenceLine x={sim.month} stroke={T.action} strokeWidth={1.5} />
+            <Bar dataKey="available" fill={T.completed} opacity={0.75} radius={[2, 2, 0, 0]} />
+            <Bar dataKey="used" fill={T.expired} opacity={0.75} radius={[2, 2, 0, 0]} />
+            {arcOn && <Bar dataKey="arc" fill={T.arc} opacity={0.75} radius={[2, 2, 0, 0]} />}
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <div style={{ flexShrink: 0, display: "flex", gap: 16, justifyContent: "center", fontSize: 12, color: T.muted, marginTop: 8 }}>
         <span style={{ color: T.completed }}>■ Funds Available</span>
         <span style={{ color: T.expired }}>■ Funds Used</span>
         {arcOn && <span style={{ color: T.arc }}>■ ARC (recurring)</span>}
@@ -2444,7 +2467,7 @@ function GanttTab({ sim }) {
   if (!portfolio.length) return <Empty msg="No projects in the portfolio yet. Add one from the Available pool." />;
   const W = 60;
   return (
-    <div style={{ maxHeight: 380, overflowY: "auto", paddingRight: 4 }}>
+    <div style={{ flex: 1, minHeight: 0, overflowY: "auto", paddingRight: 4 }}>
       {portfolio.map((p) => {
         const start = p.startMonth || 1;
         let end;
@@ -2507,12 +2530,12 @@ function SCurveTab({ sim }) {
     data.push(row);
   }
   return (
-    <div>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <div style={{ flexShrink: 0, display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
         <Chip active={pick === "all"} onClick={() => setPick("all")}>All</Chip>
         {list.map((p) => <Chip key={p.id} active={pick === p.id} onClick={() => setPick(p.id)} color={sc(p.state)}>{p.id}</Chip>)}
       </div>
-      <div style={{ height: 320 }}>
+      <div className="sim-chart" style={{ flex: 1, minHeight: 0, maxHeight: 480 }}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
             <CartesianGrid stroke={T.lineSoft} vertical={false} />
@@ -2526,7 +2549,7 @@ function SCurveTab({ sim }) {
           </LineChart>
         </ResponsiveContainer>
       </div>
-      <div style={{ textAlign: "center", fontSize: 11, color: T.muted }}>dashed = original baseline · solid = current plan (cumulative % of BAC)</div>
+      <div style={{ flexShrink: 0, textAlign: "center", fontSize: 11, color: T.muted, marginTop: 6 }}>dashed = original baseline · solid = current plan (cumulative % of BAC)</div>
     </div>
   );
 }
@@ -2549,7 +2572,7 @@ function KpiTab({ sim }) {
   const benefitsCumulative = benefitsOn ? benefitTracked.reduce((a, p) => a + (p.buCumulative || 0), 0) : 0;
   const benefitsThisMonth = benefitsOn ? benefitTracked.reduce((a, p) => a + benefitMonthlyFor(p, sim.month), 0) : 0;
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px,1fr))", gap: 12 }}>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px,1fr))", gap: 12, flex: 1, minHeight: 0, overflowY: "auto", alignContent: "start" }}>
       <Panel style={{ padding: 14, gridColumn: "span 1" }}>
         <Gauge270 value={Math.min(1, completed / Math.max(1, sim.maxComp))} label={`Delivered ${completed}/${sim.maxComp}`} color={T.completed} />
       </Panel>
@@ -3059,7 +3082,7 @@ function PortfolioDashboard({ sim }) {
   );
 
   return (
-    <div style={{ display: "flex", borderBottom: `1px solid ${T.line}`, background: T.panel }}>
+    <div style={{ display: "flex", flexShrink: 0, borderBottom: `1px solid ${T.line}`, background: T.panel }}>
       <KpiCard
         icon={Zap}
         label="Funding Efficiency"
@@ -3127,6 +3150,7 @@ const TABS = [
 export default function App() {
   const [sim, setSim] = useState(null);
   const [tab, setTab] = useState("cash");
+  const [leftTab, setLeftTab] = useState("portfolio");
   const [slowTarget, setSlowTarget] = useState(null);
   const [speedTarget, setSpeedTarget] = useState(null);
   const [shortfall, setShortfall] = useState(false);
@@ -3208,8 +3232,9 @@ export default function App() {
 
   return (
     <Shell>
+      <div className="sim-shell" style={{ height: "100dvh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
       {/* header */}
-      <div style={{ position: "sticky", top: 0, zIndex: 20, background: T.bg + "f2", backdropFilter: "blur(6px)", borderBottom: `1px solid ${T.line}`, padding: "10px 18px" }}>
+      <div style={{ flexShrink: 0, zIndex: 20, background: T.bg + "f2", backdropFilter: "blur(6px)", borderBottom: `1px solid ${T.line}`, padding: "10px 18px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
           {/* logo + name */}
           <div style={{ display: "flex", alignItems: "center", gap: 9, flexShrink: 0 }}>
@@ -3277,11 +3302,11 @@ export default function App() {
 
       <PortfolioDashboard sim={sim} />
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(340px, 420px) 1fr", gap: 16, padding: 16, alignItems: "start" }} className="sim-grid">
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(340px, 420px) 1fr", gap: 16, padding: 16, flex: 1, minHeight: 0 }} className="sim-grid">
         {/* LEFT — decisions */}
-        <div>
+        <div className="sim-left" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
           {sim.alerts.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
+            <div style={{ marginBottom: 12, flexShrink: 0 }}>
               {sim.alerts.map((a, i) => (
                 <div key={i} style={{ background: T.expired + "14", border: `1px solid ${T.expired}55`, borderRadius: 10, padding: "10px 12px", marginBottom: 8, position: "relative" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, color: T.expired }}>
@@ -3298,53 +3323,80 @@ export default function App() {
             </div>
           )}
 
-          <Section title="Active" count={activeList.length} color={T.active}>
-            {activeList.length ? activeList.map((p) => (
-              <ActiveRow key={p.id} sim={sim} p={p}
-                onSlow={(pr) => setSlowTarget(pr)}
-                onSpeed={(pr) => setSpeedTarget(pr)}
-                onSuspend={(id) => commit((n) => suspendProject(n, id))}
-                onAbandon={(id) => commit((n) => abandonProject(n, id))} />
-            )) : <Empty msg="No active projects. Add one from the Available pool." />}
-          </Section>
+          {/* left-pane tabs: Portfolio (things you hold) vs Add projects (things to acquire) */}
+          <div style={{ display: "flex", flexShrink: 0, gap: 4, marginBottom: 10, background: T.panel2, padding: 3, borderRadius: 10, border: `1px solid ${T.lineSoft}` }}>
+            {[
+              ["portfolio", "Portfolio", activeList.length + pendingList.length + suspendedList.length],
+              ["add", "Add projects", sim.projects.filter((p) => p.state === "available").length],
+            ].map(([id, label, cnt]) => (
+              <button key={id} onClick={() => setLeftTab(id)} style={{
+                flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                padding: "7px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", border: "none", borderRadius: 7,
+                background: leftTab === id ? T.panel : "transparent",
+                color: leftTab === id ? T.text : T.muted,
+                boxShadow: leftTab === id ? "0 1px 2px #0000001f" : "none",
+                textTransform: "uppercase", letterSpacing: ".04em",
+              }}>
+                {label} <span style={{ ...mono, color: leftTab === id ? T.action : T.faint }}>{cnt}</span>
+              </button>
+            ))}
+          </div>
 
-          <Section title="Top Picks" color={T.action}>
-            <QuickAddStrip sim={sim} onAdd={(id) => commit((n) => addProject(n, id))} onPreview={(p) => setPreviewProject(p)} />
-          </Section>
+          <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: leftTab === "portfolio" ? "auto" : "hidden" }}>
+            {leftTab === "portfolio" ? (
+              <>
+                <Section title="Active" count={activeList.length} color={T.active}>
+                  {activeList.length ? activeList.map((p) => (
+                    <ActiveRow key={p.id} sim={sim} p={p}
+                      onSlow={(pr) => setSlowTarget(pr)}
+                      onSpeed={(pr) => setSpeedTarget(pr)}
+                      onSuspend={(id) => commit((n) => suspendProject(n, id))}
+                      onAbandon={(id) => commit((n) => abandonProject(n, id))} />
+                  )) : <Empty msg="No active projects. Add one from the Add projects tab." />}
+                </Section>
 
-          {pendingList.length > 0 && (
-            <Section title="Pending approval" count={pendingList.length} color={T.action}>
-              {pendingList.map((p) => <PendingRow key={p.id} sim={sim} p={p} />)}
-            </Section>
-          )}
+                {pendingList.length > 0 && (
+                  <Section title="Pending approval" count={pendingList.length} color={T.action}>
+                    {pendingList.map((p) => <PendingRow key={p.id} sim={sim} p={p} />)}
+                  </Section>
+                )}
 
-          {suspendedList.length > 0 && (
-            <Section title="Suspended" count={suspendedList.length} color={T.suspended}>
-              {suspendedList.map((p) => (
-                <SuspendedRow key={p.id} sim={sim} p={p}
-                  onResume={(id) => commit((n) => resumeProject(n, id))}
-                  onAbandon={(id) => commit((n) => abandonProject(n, id))} />
-              ))}
-            </Section>
-          )}
+                {suspendedList.length > 0 && (
+                  <Section title="Suspended" count={suspendedList.length} color={T.suspended}>
+                    {suspendedList.map((p) => (
+                      <SuspendedRow key={p.id} sim={sim} p={p}
+                        onResume={(id) => commit((n) => resumeProject(n, id))}
+                        onAbandon={(id) => commit((n) => abandonProject(n, id))} />
+                    ))}
+                  </Section>
+                )}
 
-          {(sim.config?.arcEnabled || sim.config?.benefitsEnabled) && completedList.length > 0 && (
-            <Section title="Completed" count={completedList.length} color={T.completed} defaultOpen={false}>
-              {completedList.map((p) => (
-                <CompletedRow key={p.id} sim={sim} p={p}
-                  onRestore={(id) => commit((n) => restoreArcFunding(n, id))} />
-              ))}
-            </Section>
-          )}
+                {(sim.config?.arcEnabled || sim.config?.benefitsEnabled) && completedList.length > 0 && (
+                  <Section title="Completed" count={completedList.length} color={T.completed} defaultOpen={false}>
+                    {completedList.map((p) => (
+                      <CompletedRow key={p.id} sim={sim} p={p}
+                        onRestore={(id) => commit((n) => restoreArcFunding(n, id))} />
+                    ))}
+                  </Section>
+                )}
+              </>
+            ) : (
+              <>
+                <Section title="Top Picks" color={T.action}>
+                  <QuickAddStrip sim={sim} onAdd={(id) => commit((n) => addProject(n, id))} onPreview={(p) => setPreviewProject(p)} />
+                </Section>
 
-          <Section title="Available pool" count={sim.projects.filter((p) => p.state === "available").length} color={T.available}>
-            <AvailableTable sim={sim} onAdd={(id) => commit((n) => addProject(n, id))} onPreview={(p) => setPreviewProject(p)} />
-          </Section>
+                <Section title="Available pool" count={sim.projects.filter((p) => p.state === "available").length} color={T.available} fill>
+                  <AvailableTable sim={sim} onAdd={(id) => commit((n) => addProject(n, id))} onPreview={(p) => setPreviewProject(p)} />
+                </Section>
+              </>
+            )}
+          </div>
         </div>
 
         {/* RIGHT — dashboard */}
-        <Panel style={{ padding: 0, overflow: "hidden", position: "sticky", top: 76 }}>
-          <div style={{ display: "flex", borderBottom: `1px solid ${T.line}` }}>
+        <Panel className="sim-dash" style={{ padding: 0, overflow: "hidden", height: "100%", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", flexShrink: 0, borderBottom: `1px solid ${T.line}` }}>
             {TABS.map((t) => {
               const Icon = t.icon;
               // cash-crunch warning dot: future month where required > available
@@ -3365,8 +3417,8 @@ export default function App() {
               );
             })}
           </div>
-          <div style={{ padding: 16 }}>
-            <div style={{ fontSize: 11, color: T.faint, marginBottom: 10 }}>
+          <div className="sim-dash-body" style={{ padding: 16, flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+            <div style={{ flexShrink: 0, fontSize: 11, color: T.faint, marginBottom: 10 }}>
               Next {FREQ_SHORT[simFreq]?.toLowerCase() ?? "quarterly"} release: Month {nextQ <= 60 ? nextQ : "—"} · {money(sim.quarterlyRelease)}
             </div>
             {tab === "cash" && <CashFlowTab sim={sim} />}
@@ -3376,6 +3428,7 @@ export default function App() {
             {tab === "kpi" && <KpiTab sim={sim} />}
           </div>
         </Panel>
+      </div>
       </div>
 
       {slowTarget && (
@@ -3422,11 +3475,18 @@ function Shell({ children }) {
     <div style={{ minHeight: "100vh", background: T.bg, color: T.text, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" }}>
       <style>{`
         * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
         input[type=range]{ height: 4px; }
         ::-webkit-scrollbar{ width:8px; height:8px; }
         ::-webkit-scrollbar-thumb{ background:${T.line}; border-radius:8px; }
         ::-webkit-scrollbar-track{ background:transparent; }
-        @media (max-width: 880px){ .sim-grid{ grid-template-columns: 1fr !important; } }
+        @media (max-width: 880px){
+          .sim-grid{ grid-template-columns: 1fr !important; }
+          .sim-shell{ height: auto !important; overflow: visible !important; }
+          .sim-dash{ height: auto !important; }
+          .sim-chart{ flex: none !important; height: 320px !important; max-height: none !important; }
+          .sim-pool-scroll{ overflow: visible !important; }
+        }
       `}</style>
       {children}
     </div>
