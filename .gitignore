@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+server/node_modules/
+
+# Backend runtime secrets & data
+server/.env
+server/data/
+
+# Env files (keep examples)
+.env
+.env.*
+!.env.example
+*.local
+
+# Build output
+sim-app/dist/
+sim-app/dist-ssr/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

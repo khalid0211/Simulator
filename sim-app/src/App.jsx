@@ -262,6 +262,7 @@ function newSim(cfg) {
     projects,
     events: [], decisions: [], alerts: [], history: [],
     status: "running",
+    startedAt: Date.now(),
     config: { fundingProfile, fundingFrequency, budgetTightness, politicalProjects, concurrentCap, approvalLag, riskMultiplier, blindAlignment, blindScore, preset, arcEnabled, benefitsEnabled },
   };
   return sim;
@@ -513,6 +514,8 @@ function finalize(sim, { insolvent = false } = {}) {
   sim.status = "ended";
   sim.insolvent = insolvent;
   sim.endMonth = sim.month;
+  sim.endedAt = Date.now();
+  sim.durationSeconds = sim.startedAt ? Math.max(0, Math.round((sim.endedAt - sim.startedAt) / 1000)) : null;
   sim.score = scoreSim(sim);
 }
 /* ---- called when a funding shortfall cannot be resolved by any available lever ---- */
@@ -615,6 +618,83 @@ function saveToLeaderboard(sim) {
   try { localStorage.setItem(LB_KEY, JSON.stringify(board.slice(-500))); }
   catch {}
   return entry;
+}
+
+/* ============================================================
+   SERVER API + EMAIL AUTH
+   ============================================================ */
+const API = import.meta.env.VITE_API_URL || "/api";
+const AUTH_KEY = "portfolio_sim_auth_v1";
+
+function getAuth() {
+  try { return JSON.parse(localStorage.getItem(AUTH_KEY) || "null"); }
+  catch { return null; }
+}
+function setAuth(a) { try { localStorage.setItem(AUTH_KEY, JSON.stringify(a)); } catch {} }
+function clearAuth() { try { localStorage.removeItem(AUTH_KEY); } catch {} }
+
+async function apiPost(path, body, token) {
+  const res = await fetch(API + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error || "request_failed"), { status: res.status, data });
+  return data;
+}
+async function apiGet(path) {
+  const res = await fetch(API + path);
+  if (!res.ok) throw new Error("request_failed");
+  return res.json();
+}
+
+/* POST the finished run to the server (best-effort; the local leaderboard is the offline fallback). */
+async function saveRunToServer(sim) {
+  const auth = getAuth();
+  if (!auth?.token) return false;
+  const s = sim.score || {};
+  try {
+    await apiPost("/runs", {
+      playerName: sim.playerName || "Anonymous",
+      runName: sim.name || "Untitled run",
+      preset: sim.config?.preset || "custom",
+      config: sim.config || null,
+      seed: sim.seed,
+      score: {
+        final: s.final ?? 0, band: s.band,
+        delivery: s.delivery, alignment: s.alignment, efficiency: s.efficiency, benefits: s.benefits,
+        raw: s.raw, penalty: s.penalty,
+        completed: s.completed, abandoned: s.abandoned, expired: s.expired, arcReductions: s.arcReductions,
+        insolvent: !!s.insolvent,
+        benefitsBU: s.benefitsBU, benefitsPotentialBU: s.benefitsPotentialBU,
+      },
+      endMonth: sim.endMonth,
+      startedAt: sim.startedAt,
+      endedAt: sim.endedAt,
+      durationSeconds: sim.durationSeconds,
+    }, auth.token);
+    return true;
+  } catch (e) {
+    console.warn("[sim] run upload failed:", e.message);
+    return false;
+  }
+}
+
+/* Fetch the shared leaderboard, mapping rows into the shape the UI expects
+   (score rounded, date/time derived from endedAt). Throws so callers can fall
+   back to the local board when offline. */
+async function fetchServerLeaderboard(preset = "all", limit = 50) {
+  const { rows } = await apiGet(`/leaderboard?preset=${encodeURIComponent(preset)}&limit=${limit}`);
+  return rows.map((r) => {
+    const d = r.endedAt ? new Date(r.endedAt) : null;
+    return {
+      ...r,
+      score: Math.round((r.score || 0) * 10) / 10,
+      date: d ? d.toLocaleDateString() : "",
+      time: d ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "",
+    };
+  });
 }
 
 /* ============================================================
@@ -1399,13 +1479,60 @@ function SetupScreen({ onStart, onResume, hasSave }) {
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [playerName, setPlayerName] = useState("");
   const [name, setName] = useState("");
-  const lbPreview = useMemo(() => {
-    const board = loadLeaderboard();
-    if (!board.length) return null;
-    const forPreset = board.filter((e) => e.preset === preset);
-    const top = [...board].sort((a, b) => b.score - a.score)[0];
-    return { total: board.length, presetTotal: forPreset.length, top };
-  }, [preset]);
+
+  // Email verification (required to start a run)
+  const [auth, setAuthState] = useState(getAuth());
+  const [emailInput, setEmailInput] = useState("");
+  const [codeInput, setCodeInput] = useState("");
+  const [authStep, setAuthStep] = useState("idle"); // "idle" | "code-sent"
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState("");
+
+  const AUTH_ERRORS = {
+    invalid_email: "That doesn't look like a valid email address.",
+    too_many_requests: "Too many codes requested — please wait a while.",
+    email_failed: "Couldn't send the email. Please try again shortly.",
+    no_code: "Request a code first.",
+    wrong_code: "That code isn't right — check it and try again.",
+    expired: "That code has expired — request a new one.",
+    too_many_attempts: "Too many attempts — request a new code.",
+  };
+  const authMsg = (e) => AUTH_ERRORS[e?.data?.error || e?.message] || "Something went wrong. Please try again.";
+
+  const requestCode = async () => {
+    setAuthBusy(true); setAuthError("");
+    try {
+      await apiPost("/auth/request-code", { email: emailInput.trim().toLowerCase() });
+      setAuthStep("code-sent");
+    } catch (e) { setAuthError(authMsg(e)); }
+    finally { setAuthBusy(false); }
+  };
+  const verifyCode = async () => {
+    setAuthBusy(true); setAuthError("");
+    try {
+      const { token, email } = await apiPost("/auth/verify", { email: emailInput.trim().toLowerCase(), code: codeInput });
+      const a = { token, email };
+      setAuth(a); setAuthState(a);
+      if (!playerName) setPlayerName(email.split("@")[0]);
+    } catch (e) { setAuthError(authMsg(e)); }
+    finally { setAuthBusy(false); }
+  };
+  const signOut = () => { clearAuth(); setAuthState(null); setAuthStep("idle"); setEmailInput(""); setCodeInput(""); setAuthError(""); };
+
+  // Shared leaderboard preview (server, falling back to local)
+  const [lbPreview, setLbPreview] = useState(null);
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      let board;
+      try { board = await fetchServerLeaderboard("all", 500); }
+      catch { board = loadLeaderboard(); }
+      if (!live || !board.length) return;
+      const top = [...board].sort((a, b) => b.score - a.score)[0];
+      setLbPreview({ total: board.length, top });
+    })();
+    return () => { live = false; };
+  }, []);
 
   const [annualRate,       setAnnualRate]       = useState(3);
   const [fundingProfile,   setFundingProfile]   = useState("scurve");
@@ -1494,6 +1621,43 @@ function SetupScreen({ onStart, onResume, hasSave }) {
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Punjab ADP dry-run"
                 style={{ width: "100%", boxSizing: "border-box", marginTop: 6, padding: "10px 12px", borderRadius: 8, background: T.panel2, border: `1px solid ${T.line}`, color: T.text, fontSize: 14, outline: "none" }} />
             </div>
+          </div>
+
+          {/* email verification — required to start a run */}
+          <div style={{ marginBottom: 20 }}>
+            <label style={{ fontSize: 12, color: T.muted, textTransform: "uppercase", letterSpacing: ".06em", display: "block", marginBottom: 6 }}>Email verification</label>
+            {auth ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: T.completed + "12", border: `1px solid ${T.completed}55`, borderRadius: 8, padding: "10px 12px" }}>
+                <span style={{ fontSize: 13, color: T.text }}>
+                  <span style={{ color: T.completed, fontWeight: 700 }}>✓ Verified</span> — signed in as <strong>{auth.email}</strong>
+                </span>
+                <button onClick={signOut} style={{ background: "none", border: "none", color: T.muted, fontSize: 12, cursor: "pointer", textDecoration: "underline", flexShrink: 0 }}>Sign out</button>
+              </div>
+            ) : (
+              <div style={{ background: T.panel2, border: `1px solid ${T.line}`, borderRadius: 8, padding: 12 }}>
+                {authStep === "idle" ? (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <input type="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="you@example.com" disabled={authBusy}
+                      onKeyDown={(e) => { if (e.key === "Enter" && emailInput) requestCode(); }}
+                      style={{ flex: 1, minWidth: 180, boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, background: T.panel, border: `1px solid ${T.line}`, color: T.text, fontSize: 14, outline: "none" }} />
+                    <Btn kind="primary" disabled={authBusy || !emailInput} onClick={requestCode} style={{ padding: "10px 14px" }}>{authBusy ? "Sending…" : "Send code"}</Btn>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <div style={{ fontSize: 12, color: T.muted, width: "100%" }}>Enter the 6-digit code sent to <strong>{emailInput}</strong></div>
+                    <input inputMode="numeric" value={codeInput} onChange={(e) => setCodeInput(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="123456" disabled={authBusy}
+                      onKeyDown={(e) => { if (e.key === "Enter" && codeInput.length === 6) verifyCode(); }}
+                      style={{ width: 130, boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, background: T.panel, border: `1px solid ${T.line}`, color: T.text, fontSize: 16, letterSpacing: "3px", ...mono, outline: "none" }} />
+                    <Btn kind="primary" disabled={authBusy || codeInput.length !== 6} onClick={verifyCode} style={{ padding: "10px 14px" }}>{authBusy ? "Verifying…" : "Verify"}</Btn>
+                    <button onClick={() => { setAuthStep("idle"); setCodeInput(""); setAuthError(""); }} style={{ background: "none", border: "none", color: T.muted, fontSize: 12, cursor: "pointer" }}>Change email</button>
+                  </div>
+                )}
+                {authError && <div style={{ fontSize: 12, color: T.expired, marginTop: 8 }}>{authError}</div>}
+                <div style={{ fontSize: 11, color: T.faint, marginTop: 8, lineHeight: 1.4 }}>
+                  Verifying is required to play. We store your email and run results to power the shared leaderboard.
+                </div>
+              </div>
+            )}
           </div>
 
           {/* difficulty preset tiles */}
@@ -1613,8 +1777,8 @@ function SetupScreen({ onStart, onResume, hasSave }) {
 
           {/* actions */}
           <div style={{ display: "flex", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
-            <Btn kind="primary" onClick={() => onStart(buildConfig())} style={{ flex: 1, justifyContent: "center", padding: "11px" }}>
-              <Play size={16} /> Start new run
+            <Btn kind="primary" disabled={!auth} title={auth ? undefined : "Verify your email to start"} onClick={() => onStart(buildConfig())} style={{ flex: 1, justifyContent: "center", padding: "11px" }}>
+              <Play size={16} /> {auth ? "Start new run" : "Verify email to start"}
             </Btn>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
               <Btn onClick={() => setShowLeaderboard(true)} title="View leaderboard">
@@ -2684,10 +2848,14 @@ function Debrief({ sim, onRestart }) {
   const [timelineView, setTimelineView] = useState(true);
   const bandColor = s.final >= 70 ? T.completed : s.final >= 40 ? T.suspended : T.expired;
 
-  // Save to leaderboard once on mount and remember the entry for highlighting
+  // Save to leaderboard once on mount and remember the entry for highlighting.
+  // Also upload the run to the server (best-effort; local save is the fallback).
   const lbEntryRef = useRef(null);
   useEffect(() => {
-    if (!lbEntryRef.current) lbEntryRef.current = saveToLeaderboard(sim);
+    if (!lbEntryRef.current) {
+      lbEntryRef.current = saveToLeaderboard(sim);
+      saveRunToServer(sim);
+    }
   }, []);
 
   const [showAssessment, setShowAssessment] = useState(false);
@@ -2906,7 +3074,18 @@ const PRESET_LABELS = { learning: "Learning", standard: "Standard", advanced: "A
 function LeaderboardModal({ onClose, highlightEntry }) {
   // Default to "all" when opened from setup (no highlightEntry); default to the run's preset from debrief
   const [activeTab, setActiveTab] = useState(highlightEntry?.preset || "all");
-  const board = useMemo(() => loadLeaderboard(), []);
+  // Shared leaderboard from the server, falling back to the local board when offline.
+  const [board, setBoard] = useState([]);
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      let rows;
+      try { rows = await fetchServerLeaderboard("all", 500); }
+      catch { rows = loadLeaderboard(); }
+      if (live) setBoard(rows);
+    })();
+    return () => { live = false; };
+  }, []);
 
   const rows = (activeTab === "all" ? board : board.filter((e) => e.preset === activeTab))
     .sort((a, b) => b.score - a.score)
