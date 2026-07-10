@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Portfolio Simulator — Admin</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #f4f6fb; color: #16202e;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 24px 18px 60px; }
+  h1 { font-size: 20px; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
+  .sub { color: #566379; font-size: 13px; margin-bottom: 24px; }
+  .card {
+    background: #fff; border: 1px solid #d6deea; border-radius: 12px; padding: 20px; margin-bottom: 16px;
+  }
+  .hidden { display: none !important; }
+
+  /* login */
+  #login { max-width: 380px; margin: 60px auto; text-align: center; }
+  #login input {
+    width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; border: 1px solid #d6deea;
+    font-size: 15px; margin: 14px 0 10px;
+  }
+  #login button, .btn {
+    background: #4f46e5; color: #fff; border: none; border-radius: 8px; padding: 10px 16px;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  .btn.ghost { background: transparent; color: #4f46e5; border: 1px solid #4f46e5; }
+  #loginError { color: #e11d48; font-size: 13px; min-height: 18px; margin-top: 6px; }
+
+  /* dashboard */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap: 12px; margin-bottom: 16px; }
+  .stat { background: #fff; border: 1px solid #d6deea; border-radius: 12px; padding: 16px; }
+  .stat .n { font-size: 26px; font-weight: 700; color: #4f46e5; }
+  .stat .l { font-size: 12px; color: #566379; text-transform: uppercase; letter-spacing: .04em; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #e6ecf5; white-space: nowrap; }
+  th { color: #566379; font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .03em; }
+  .tableScroll { overflow-x: auto; }
+  .band-good { color: #059669; font-weight: 600; }
+  .band-mid { color: #d97706; font-weight: 600; }
+  .band-low { color: #e11d48; font-weight: 600; }
+
+  .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 20px; }
+  .toolbar .spacer { flex: 1; }
+  a.signout { color: #566379; font-size: 12.5px; text-decoration: underline; cursor: pointer; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: #566379; margin: 0 0 12px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+
+    <div id="login">
+      <h1>🔒 Admin sign-in</h1>
+      <p class="sub">Enter the admin key to view usage data for the Portfolio Simulator.</p>
+      <input id="keyInput" type="password" placeholder="Admin key" autocomplete="off" />
+      <div><button onclick="tryLogin()">Sign in</button></div>
+      <div id="loginError"></div>
+    </div>
+
+    <div id="dash" class="hidden">
+      <div class="toolbar">
+        <h1 style="margin:0">📊 Portfolio Simulator — Usage</h1>
+        <div class="spacer"></div>
+        <button class="btn" onclick="downloadCsv('runs')">Download runs (CSV)</button>
+        <button class="btn" onclick="downloadCsv('users')">Download users (CSV)</button>
+        <button class="btn ghost" onclick="downloadBackup()">Download DB backup</button>
+        <a class="signout" onclick="signOut()">Sign out</a>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><div class="n" id="statUsers">—</div><div class="l">Verified users</div></div>
+        <div class="stat"><div class="n" id="statRuns">—</div><div class="l">Completed runs</div></div>
+      </div>
+
+      <div class="card">
+        <h2>Runs by mode</h2>
+        <div class="tableScroll"><table id="byPresetTable"><thead><tr><th>Mode</th><th>Runs</th><th>Avg score</th><th>Avg minutes</th></tr></thead><tbody></tbody></table></div>
+      </div>
+
+      <div class="card">
+        <h2>Top 10 scores</h2>
+        <div class="tableScroll"><table id="topTable"><thead><tr><th>#</th><th>Score</th><th>Band</th><th>Player</th><th>Email</th><th>Mode</th><th>When</th></tr></thead><tbody></tbody></table></div>
+      </div>
+
+      <div class="card">
+        <h2>Most recent runs</h2>
+        <div class="tableScroll"><table id="recentTable"><thead><tr><th>When</th><th>Player</th><th>Email</th><th>Score</th><th>Band</th><th>Mode</th><th>Minutes</th></tr></thead><tbody></tbody></table></div>
+      </div>
+
+      <div class="card">
+        <h2>Verified users</h2>
+        <div class="tableScroll"><table id="usersTable"><thead><tr><th>Email</th><th>First seen</th><th>Last verified</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+
+  </div>
+
+<script>
+  const KEY_STORAGE = "sim_admin_key";
+  const getKey = () => localStorage.getItem(KEY_STORAGE) || "";
+  const setKey = (k) => localStorage.setItem(KEY_STORAGE, k);
+  const clearKey = () => localStorage.removeItem(KEY_STORAGE);
+
+  const fmtDate = (ts) => (ts ? new Date(ts).toLocaleString() : "—");
+  const bandClass = (b) => {
+    if (!b) return "";
+    if (/excellent|good/i.test(b)) return "band-good";
+    if (/satisfactory/i.test(b)) return "band-mid";
+    return "band-low";
+  };
+  const escapeHtml = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  async function loadSummary() {
+    const res = await fetch("/api/admin/summary", { headers: { "X-Admin-Key": getKey() } });
+    if (!res.ok) throw new Error("unauthorized");
+    return res.json();
+  }
+
+  function render(data) {
+    document.getElementById("statUsers").textContent = data.totalUsers;
+    document.getElementById("statRuns").textContent = data.totalRuns;
+
+    const byPresetBody = document.querySelector("#byPresetTable tbody");
+    byPresetBody.innerHTML = data.byPreset.map(r => `
+      <tr><td>${escapeHtml(r.preset || "custom")}</td><td>${r.runs}</td><td>${r.avgScore ?? "—"}</td><td>${r.avgMinutes ?? "—"}</td></tr>
+    `).join("") || `<tr><td colspan="4">No runs yet.</td></tr>`;
+
+    const topBody = document.querySelector("#topTable tbody");
+    topBody.innerHTML = data.topScores.map((r, i) => `
+      <tr><td>${i + 1}</td><td>${r.score_final?.toFixed(1)}</td><td class="${bandClass(r.band)}">${escapeHtml(r.band)}</td>
+      <td>${escapeHtml(r.player_name)}</td><td>${escapeHtml(r.user_email)}</td><td>${escapeHtml(r.preset)}</td><td>${fmtDate(r.ended_at)}</td></tr>
+    `).join("") || `<tr><td colspan="7">No runs yet.</td></tr>`;
+
+    const recentBody = document.querySelector("#recentTable tbody");
+    recentBody.innerHTML = data.recentRuns.map(r => `
+      <tr><td>${fmtDate(r.ended_at)}</td><td>${escapeHtml(r.player_name)}</td><td>${escapeHtml(r.user_email)}</td>
+      <td>${r.score_final?.toFixed(1)}</td><td class="${bandClass(r.band)}">${escapeHtml(r.band)}</td><td>${escapeHtml(r.preset)}</td>
+      <td>${r.duration_seconds != null ? (r.duration_seconds / 60).toFixed(1) : "—"}</td></tr>
+    `).join("") || `<tr><td colspan="7">No runs yet.</td></tr>`;
+
+    const usersBody = document.querySelector("#usersTable tbody");
+    usersBody.innerHTML = data.users.map(u => `
+      <tr><td>${escapeHtml(u.email)}</td><td>${fmtDate(u.created_at)}</td><td>${fmtDate(u.verified_at)}</td></tr>
+    `).join("") || `<tr><td colspan="3">No users yet.</td></tr>`;
+  }
+
+  async function showDashboard() {
+    const data = await loadSummary();
+    document.getElementById("login").classList.add("hidden");
+    document.getElementById("dash").classList.remove("hidden");
+    render(data);
+  }
+
+  async function tryLogin() {
+    const input = document.getElementById("keyInput");
+    const err = document.getElementById("loginError");
+    err.textContent = "";
+    setKey(input.value.trim());
+    try {
+      await showDashboard();
+    } catch {
+      clearKey();
+      err.textContent = "That key isn't right — please try again.";
+    }
+  }
+
+  function signOut() {
+    clearKey();
+    document.getElementById("dash").classList.add("hidden");
+    document.getElementById("login").classList.remove("hidden");
+    document.getElementById("keyInput").value = "";
+  }
+
+  async function downloadBlob(url, filename) {
+    const res = await fetch(url, { headers: { "X-Admin-Key": getKey() } });
+    if (!res.ok) { alert("Download failed — please try signing in again."); return; }
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function downloadCsv(kind) {
+    downloadBlob(`/api/admin/export/${kind}.csv`, `${kind}-${new Date().toISOString().slice(0, 10)}.csv`);
+  }
+  function downloadBackup() {
+    downloadBlob(`/api/admin/backup`, `simulator-backup-${new Date().toISOString().slice(0, 10)}.db`);
+  }
+
+  document.getElementById("keyInput").addEventListener("keydown", (e) => { if (e.key === "Enter") tryLogin(); });
+
+  // Auto sign-in if a key is already remembered on this device.
+  if (getKey()) { showDashboard().catch(() => { clearKey(); }); }
+</script>
+</body>
+</html>
