@@ -8,7 +8,8 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "report": "node src/report.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1",
