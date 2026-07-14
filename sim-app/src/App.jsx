@@ -968,10 +968,12 @@ const Btn = ({ children, onClick, kind = "ghost", disabled, title, style }) => {
   );
 };
 
-function Stat({ label, value, sub, accent }) {
+function Stat({ label, value, sub, accent, labelLines }) {
+  // labelLines reserves a fixed label height so values line up across a row
+  // of tiles whose labels wrap to different line counts.
   return (
-    <div style={{ background: T.panel2, border: `1px solid ${T.lineSoft}`, borderRadius: 10, padding: "12px 14px" }}>
-      <div style={{ fontSize: 11, color: T.muted, textTransform: "uppercase", letterSpacing: ".06em" }}>{label}</div>
+    <div style={{ background: T.panel2, border: `1px solid ${T.lineSoft}`, borderRadius: 10, padding: "12px 14px", minWidth: 0 }}>
+      <div style={{ fontSize: 11, color: T.muted, textTransform: "uppercase", letterSpacing: ".06em", ...(labelLines ? { minHeight: labelLines * 13.5, lineHeight: "13.5px" } : {}) }}>{label}</div>
       <div style={{ fontSize: 22, fontWeight: 700, color: accent || T.text, marginTop: 4, ...mono }}>{value}</div>
       {sub && <div style={{ fontSize: 11, color: T.faint, marginTop: 2 }}>{sub}</div>}
     </div>
@@ -2038,7 +2040,7 @@ function ProjectPreviewModal({ sim, project, onAdd, onClose }) {
   const benefitsOn = !!sim.config?.benefitsEnabled;
 
   return (
-    <Overlay onClose={onClose}>
+    <Overlay onClose={onClose} width={680}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
         <Eye size={18} color={T.action} />
         <h3 style={{ margin: 0, fontSize: 16 }}>Preview: {project.title}</h3>
@@ -2047,13 +2049,14 @@ function ProjectPreviewModal({ sim, project, onAdd, onClose }) {
         See how adding this project affects your cash flow before committing.
       </p>
 
-      <div style={{ display: "grid", gridTemplateColumns: `repeat(${benefitsOn ? 6 : 5}, 1fr)`, gap: 8, marginBottom: 14 }}>
-        <Stat label="BAC (inflation-adj)" value={money(bac)} />
-        <Stat label="Duration" value={`${project.durationPlanned}m`} sub={`ends M${projEnd}`} accent={projEnd > 60 ? T.expired : T.text} />
-        {!blind && <Stat label="Strategic fit" value={pct(project.alignment)} accent={alignColor} />}
-        <Stat label="Monthly burn increase" value={money(monthlyBurnIncrease)} accent={monthlyBurnIncrease > 0 ? T.suspended : T.text} />
-        <Stat label="ARC rate" value={pct(project.arcRate)} sub={project.subCategory} accent={T.arc} />
-        {benefitsOn && <Stat label="Benefit rate" value={`${project.buRate} BU/mo`} sub={`≈ ${money(project.buRate * BU_VALUE)}/mo social value`} accent={T.completed} />}
+      {/* auto-fit lets tiles wrap to a second row instead of overflowing the modal */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", gap: 8, marginBottom: 14 }}>
+        <Stat label="BAC" value={money(bac)} sub="inflation-adjusted" labelLines={2} />
+        <Stat label="Duration" value={`${project.durationPlanned}m`} sub={`ends M${projEnd}`} accent={projEnd > 60 ? T.expired : T.text} labelLines={2} />
+        {!blind && <Stat label="Strategic fit" value={pct(project.alignment)} accent={alignColor} labelLines={2} />}
+        <Stat label="Burn increase" value={money(monthlyBurnIncrease)} sub="per month" accent={monthlyBurnIncrease > 0 ? T.suspended : T.text} labelLines={2} />
+        <Stat label="ARC rate" value={pct(project.arcRate)} sub={project.subCategory} accent={T.arc} labelLines={2} />
+        {benefitsOn && <Stat label="Benefit rate" value={`${project.buRate} BU/mo`} sub={`≈ ${money(project.buRate * BU_VALUE)}/mo social value`} accent={T.completed} labelLines={2} />}
       </div>
 
       <div style={{ marginBottom: 6, fontSize: 11.5, fontWeight: 700, color: T.text, textTransform: "uppercase", letterSpacing: ".05em" }}>
@@ -2318,10 +2321,10 @@ function SpeedModal({ sim, project, onApply, onClose }) {
   );
 }
 
-function Overlay({ children, onClose }) {
+function Overlay({ children, onClose, width = 460 }) {
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: T.scrim, display: "grid", placeItems: "center", zIndex: 50, padding: 20 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: "min(460px, 94vw)", background: T.panel, border: `1px solid ${T.line}`, borderRadius: 14, padding: 22, boxShadow: T.shadow }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: `min(${width}px, 94vw)`, background: T.panel, border: `1px solid ${T.line}`, borderRadius: 14, padding: 22, boxShadow: T.shadow }}>
         {children}
       </div>
     </div>
