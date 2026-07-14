@@ -15,8 +15,9 @@ const MAX_ATTEMPTS = 5;
 const MAX_CODES_PER_HOUR = 5;
 
 const emailField = z.string().email().max(200).transform((s) => s.trim().toLowerCase());
+const nameField = z.string().trim().min(1).max(60).optional();
 const emailSchema = z.object({ email: emailField });
-const verifySchema = z.object({ email: emailField, code: z.string().regex(/^\d{6}$/) });
+const verifySchema = z.object({ email: emailField, code: z.string().regex(/^\d{6}$/), name: nameField });
 
 const hashCode = (code) => crypto.createHash("sha256").update(String(code)).digest("hex");
 const nowIso = () => new Date().toISOString();
@@ -59,7 +60,7 @@ authRouter.post("/request-code", requestLimiter, async (req, res) => {
 authRouter.post("/verify", (req, res) => {
   const parsed = verifySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "invalid_input" });
-  const { email, code } = parsed.data;
+  const { email, code, name } = parsed.data;
 
   const row = db
     .prepare("SELECT * FROM email_codes WHERE email = ? AND consumed_at IS NULL ORDER BY id DESC LIMIT 1")
@@ -75,17 +76,22 @@ authRouter.post("/verify", (req, res) => {
 
   db.prepare("UPDATE email_codes SET consumed_at = ? WHERE id = ?").run(nowIso(), row.id);
 
-  const existing = db.prepare("SELECT email FROM users WHERE email = ?").get(email);
+  // Registration: the display name travels with the verified email so a
+  // returning player sees both without re-typing. Re-verifying with a new
+  // name overwrites it — this is how "un-register then re-register" changes
+  // the stored name.
+  const existing = db.prepare("SELECT email, display_name FROM users WHERE email = ?").get(email);
+  const displayName = name || existing?.display_name || null;
   if (existing) {
-    db.prepare("UPDATE users SET verified_at = ? WHERE email = ?").run(nowIso(), email);
+    db.prepare("UPDATE users SET verified_at = ?, display_name = ? WHERE email = ?").run(nowIso(), displayName, email);
   } else {
-    db.prepare("INSERT INTO users (email, created_at, verified_at) VALUES (?,?,?)").run(
-      email, nowIso(), nowIso()
+    db.prepare("INSERT INTO users (email, display_name, created_at, verified_at) VALUES (?,?,?,?)").run(
+      email, displayName, nowIso(), nowIso()
     );
   }
 
   const token = jwt.sign({ email }, JWT_SECRET, { expiresIn: `${TOKEN_TTL_DAYS}d` });
-  res.json({ token, email });
+  res.json({ token, email, name: displayName });
 });
 
 export function requireAuth(req, res, next) {

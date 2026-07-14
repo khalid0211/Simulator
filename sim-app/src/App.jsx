@@ -625,6 +625,7 @@ function saveToLeaderboard(sim) {
    ============================================================ */
 const API = import.meta.env.VITE_API_URL || "/api";
 const AUTH_KEY = "portfolio_sim_auth_v1";
+const SIM_VERSION = typeof __SIM_VERSION__ !== "undefined" ? __SIM_VERSION__ : "dev";
 
 function getAuth() {
   try { return JSON.parse(localStorage.getItem(AUTH_KEY) || "null"); }
@@ -1477,11 +1478,13 @@ function SetupScreen({ onStart, onResume, hasSave }) {
   const [showCustom, setShowCustom] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
-  const [playerName, setPlayerName] = useState("");
   const [name, setName] = useState("");
 
-  // Email verification (required to start a run)
+  // Player registration (email + name, required to start a run). Verifying
+  // stores {token, email, name} in localStorage so a returning player sees
+  // their name and email without re-entering them.
   const [auth, setAuthState] = useState(getAuth());
+  const [nameInput, setNameInput] = useState("");
   const [emailInput, setEmailInput] = useState("");
   const [codeInput, setCodeInput] = useState("");
   const [authStep, setAuthStep] = useState("idle"); // "idle" | "code-sent"
@@ -1510,14 +1513,18 @@ function SetupScreen({ onStart, onResume, hasSave }) {
   const verifyCode = async () => {
     setAuthBusy(true); setAuthError("");
     try {
-      const { token, email } = await apiPost("/auth/verify", { email: emailInput.trim().toLowerCase(), code: codeInput });
-      const a = { token, email };
+      const { token, email, name: registeredName } = await apiPost("/auth/verify", {
+        email: emailInput.trim().toLowerCase(), code: codeInput, name: nameInput.trim(),
+      });
+      const a = { token, email, name: registeredName || nameInput.trim() };
       setAuth(a); setAuthState(a);
-      if (!playerName) setPlayerName(email.split("@")[0]);
     } catch (e) { setAuthError(authMsg(e)); }
     finally { setAuthBusy(false); }
   };
-  const signOut = () => { clearAuth(); setAuthState(null); setAuthStep("idle"); setEmailInput(""); setCodeInput(""); setAuthError(""); };
+  const unregister = () => {
+    clearAuth(); setAuthState(null); setAuthStep("idle");
+    setNameInput(""); setEmailInput(""); setCodeInput(""); setAuthError("");
+  };
 
   // Shared leaderboard preview (server, falling back to local)
   const [lbPreview, setLbPreview] = useState(null);
@@ -1568,7 +1575,7 @@ function SetupScreen({ onStart, onResume, hasSave }) {
 
   const buildConfig = () => ({
     name: name || "Untitled run",
-    playerName: playerName || "Anonymous",
+    playerName: auth?.name || "Anonymous",
     preset,
     annualRate: annualRate / 100,
     fundingProfile,
@@ -1597,6 +1604,7 @@ function SetupScreen({ onStart, onResume, hasSave }) {
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
           <Gauge size={26} color={T.action} />
           <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-.02em", margin: 0 }}>Portfolio Simulator</h1>
+          <span style={{ fontSize: 11, color: T.faint, ...mono }}>v{SIM_VERSION}</span>
         </div>
         <p style={{ color: T.muted, margin: "0 0 16px", fontSize: 14, lineHeight: 1.5 }}>
           Sixty months. Thirty candidate projects. Enough budget for roughly twenty. Select, fund, slow, and — when the money runs short — decide what gives.
@@ -1609,38 +1617,33 @@ function SetupScreen({ onStart, onResume, hasSave }) {
         />
 
         <Panel style={{ padding: 22, marginBottom: 14 }}>
-          {/* player name + run name */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
-            <div>
-              <label style={{ fontSize: 12, color: T.muted, textTransform: "uppercase", letterSpacing: ".06em" }}>Player name</label>
-              <input value={playerName} onChange={(e) => setPlayerName(e.target.value)} placeholder="Your name for the leaderboard"
-                style={{ width: "100%", boxSizing: "border-box", marginTop: 6, padding: "10px 12px", borderRadius: 8, background: T.panel2, border: `1px solid ${T.line}`, color: T.text, fontSize: 14, outline: "none" }} />
-            </div>
-            <div>
-              <label style={{ fontSize: 12, color: T.muted, textTransform: "uppercase", letterSpacing: ".06em" }}>Run name</label>
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Punjab ADP dry-run"
-                style={{ width: "100%", boxSizing: "border-box", marginTop: 6, padding: "10px 12px", borderRadius: 8, background: T.panel2, border: `1px solid ${T.line}`, color: T.text, fontSize: 14, outline: "none" }} />
-            </div>
+          {/* run name */}
+          <div style={{ marginBottom: 20 }}>
+            <label style={{ fontSize: 12, color: T.muted, textTransform: "uppercase", letterSpacing: ".06em" }}>Run name</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Punjab ADP dry-run"
+              style={{ width: "100%", boxSizing: "border-box", marginTop: 6, padding: "10px 12px", borderRadius: 8, background: T.panel2, border: `1px solid ${T.line}`, color: T.text, fontSize: 14, outline: "none" }} />
           </div>
 
-          {/* email verification — required to start a run */}
+          {/* player registration — required to start a run */}
           <div style={{ marginBottom: 20 }}>
-            <label style={{ fontSize: 12, color: T.muted, textTransform: "uppercase", letterSpacing: ".06em", display: "block", marginBottom: 6 }}>Email verification</label>
+            <label style={{ fontSize: 12, color: T.muted, textTransform: "uppercase", letterSpacing: ".06em", display: "block", marginBottom: 6 }}>Player registration</label>
             {auth ? (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: T.completed + "12", border: `1px solid ${T.completed}55`, borderRadius: 8, padding: "10px 12px" }}>
                 <span style={{ fontSize: 13, color: T.text }}>
-                  <span style={{ color: T.completed, fontWeight: 700 }}>✓ Verified</span> — signed in as <strong>{auth.email}</strong>
+                  <span style={{ color: T.completed, fontWeight: 700 }}>✓ Registered</span> as <strong>{auth.name || "Player"}</strong> — {auth.email}
                 </span>
-                <button onClick={signOut} style={{ background: "none", border: "none", color: T.muted, fontSize: 12, cursor: "pointer", textDecoration: "underline", flexShrink: 0 }}>Sign out</button>
+                <button onClick={unregister} style={{ background: "none", border: "none", color: T.muted, fontSize: 12, cursor: "pointer", textDecoration: "underline", flexShrink: 0 }}>Un-register</button>
               </div>
             ) : (
               <div style={{ background: T.panel2, border: `1px solid ${T.line}`, borderRadius: 8, padding: 12 }}>
                 {authStep === "idle" ? (
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <input value={nameInput} onChange={(e) => setNameInput(e.target.value)} placeholder="Your name for the leaderboard" disabled={authBusy}
+                      style={{ flex: 1, minWidth: 140, boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, background: T.panel, border: `1px solid ${T.line}`, color: T.text, fontSize: 14, outline: "none" }} />
                     <input type="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="you@example.com" disabled={authBusy}
-                      onKeyDown={(e) => { if (e.key === "Enter" && emailInput) requestCode(); }}
+                      onKeyDown={(e) => { if (e.key === "Enter" && emailInput && nameInput.trim()) requestCode(); }}
                       style={{ flex: 1, minWidth: 180, boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, background: T.panel, border: `1px solid ${T.line}`, color: T.text, fontSize: 14, outline: "none" }} />
-                    <Btn kind="primary" disabled={authBusy || !emailInput} onClick={requestCode} style={{ padding: "10px 14px" }}>{authBusy ? "Sending…" : "Send code"}</Btn>
+                    <Btn kind="primary" disabled={authBusy || !emailInput || !nameInput.trim()} onClick={requestCode} style={{ padding: "10px 14px" }}>{authBusy ? "Sending…" : "Register"}</Btn>
                   </div>
                 ) : (
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -1648,13 +1651,13 @@ function SetupScreen({ onStart, onResume, hasSave }) {
                     <input inputMode="numeric" value={codeInput} onChange={(e) => setCodeInput(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="123456" disabled={authBusy}
                       onKeyDown={(e) => { if (e.key === "Enter" && codeInput.length === 6) verifyCode(); }}
                       style={{ width: 130, boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, background: T.panel, border: `1px solid ${T.line}`, color: T.text, fontSize: 16, letterSpacing: "3px", ...mono, outline: "none" }} />
-                    <Btn kind="primary" disabled={authBusy || codeInput.length !== 6} onClick={verifyCode} style={{ padding: "10px 14px" }}>{authBusy ? "Verifying…" : "Verify"}</Btn>
+                    <Btn kind="primary" disabled={authBusy || codeInput.length !== 6} onClick={verifyCode} style={{ padding: "10px 14px" }}>{authBusy ? "Verifying…" : "Verify & register"}</Btn>
                     <button onClick={() => { setAuthStep("idle"); setCodeInput(""); setAuthError(""); }} style={{ background: "none", border: "none", color: T.muted, fontSize: 12, cursor: "pointer" }}>Change email</button>
                   </div>
                 )}
                 {authError && <div style={{ fontSize: 12, color: T.expired, marginTop: 8 }}>{authError}</div>}
                 <div style={{ fontSize: 11, color: T.faint, marginTop: 8, lineHeight: 1.4 }}>
-                  Verifying is required to play. We store your email and run results to power the shared leaderboard.
+                  Registering is required to play. We store your name and email with your run results to power the shared leaderboard.
                 </div>
               </div>
             )}
@@ -1777,8 +1780,8 @@ function SetupScreen({ onStart, onResume, hasSave }) {
 
           {/* actions */}
           <div style={{ display: "flex", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
-            <Btn kind="primary" disabled={!auth} title={auth ? undefined : "Verify your email to start"} onClick={() => onStart(buildConfig())} style={{ flex: 1, justifyContent: "center", padding: "11px" }}>
-              <Play size={16} /> {auth ? "Start new run" : "Verify email to start"}
+            <Btn kind="primary" disabled={!auth} title={auth ? undefined : "Register to start"} onClick={() => onStart(buildConfig())} style={{ flex: 1, justifyContent: "center", padding: "11px" }}>
+              <Play size={16} /> {auth ? "Start new run" : "Register to start"}
             </Btn>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
               <Btn onClick={() => setShowLeaderboard(true)} title="View leaderboard">
