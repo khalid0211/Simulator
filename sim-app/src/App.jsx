@@ -48,10 +48,11 @@ const PROJECT_PALETTE = ["#3498db", "#667eea", "#28a745", "#6f42c1", "#e67e22", 
 const projectColor = (i) => PROJECT_PALETTE[((i % PROJECT_PALETTE.length) + PROJECT_PALETTE.length) % PROJECT_PALETTE.length];
 const projectColorById = (sim, id) => projectColor(sim.projects.findIndex((p) => p.id === id));
 /* semantic funding colours (match across charts, table, callout) */
-const FUND_REQ = "#6f42c1";      // cumulative cash requirement
 const FUND_OK = "#28a745";       // cumulative funding / positive headroom
-const FUND_BAD = "#dc3545";      // shortfall / overload
+const FUND_BAD = "#dc3545";      // cumulative requirement / shortfall / overload
 const FUND_BAND = "rgba(220,53,69,0.12)";
+const SPEND_NORMAL = "#7cb9e8";  // light blue — project spending at normal pace
+const SPEND_SLOWED = "#fdba74";  // light orange — spending of slowed-down projects
 const dc = (t) => ({ add: T.completed, slow: T.suspended, speed: T.active, suspend: T.suspended, resume: T.active, abandon: T.expired, arc_reduce: T.arc, arc_restore: T.action, arc_cutoff: T.expired }[t] || T.muted);
 const STATE_LABEL = {
   available: "Available", active: "Active", suspended: "Suspended",
@@ -443,6 +444,7 @@ function deductAndProgress(sim, rng) {
   sim.alerts = [];
   for (const p of actives(sim)) {
     const nom = p.sCurve.shift() || 0;
+    (p.drawHistory = p.drawHistory || []).push({ m, nom });   // actual draw record for S-curve actuals
     p.nominalSpent += nom;
     p.cashDrawn += nom * inflator(sim.monthlyRate, m);
     const prog = p.bacCurrent ? p.nominalSpent / p.bacCurrent : 1;
@@ -1492,7 +1494,11 @@ function SetupScreen({ onStart, onResume, hasSave }) {
   const [showCustom, setShowCustom] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
-  const [name, setName] = useState("");
+  const [name, setName] = useState(() => {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    return `Portfolio ${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}`;
+  });
 
   // Player registration (email + name, required to start a run). Verifying
   // stores {token, email, name} in localStorage so a returning player sees
@@ -2527,6 +2533,11 @@ function computeFundingAnalysis(sim, granularity = "M") {
   sim.history.forEach((h) => { byMonth[h.month] = h; });
   const probe = clone(sim);
   const pfreq = probe.config?.fundingFrequency ?? 3;
+  // a project counts as "slowed" while its most recent pace decision is a slow
+  const slowedIds = new Set(sim.projects.filter((p) => {
+    const pace = [...sim.decisions].reverse().find((d) => d.id === p.id && (d.type === "slow" || d.type === "speed"));
+    return pace?.type === "slow";
+  }).map((p) => p.id));
 
   // monthly base series: actuals up to current month-1, projection forward
   const monthly = [];
@@ -2534,22 +2545,21 @@ function computeFundingAnalysis(sim, granularity = "M") {
     const funding = (m - 1) % pfreq === 0 ? (probe.releaseSchedule?.[(m - 1) / pfreq] ?? probe.quarterlyRelease ?? 0) : 0;
     if (m < probe.month) {
       const h = byMonth[m];
-      monthly.push({ m, funding, actualSpend: h?.demand ?? 0, arc: h?.arc ?? 0, perProject: null });
+      monthly.push({ m, funding, actualSpend: h?.demand ?? 0, arc: h?.arc ?? 0, normal: 0, slowed: 0 });
     } else {
-      const perProject = {};
+      let normal = 0, slowed = 0;
       for (const p of actives(probe)) {
         const v = (p.sCurve[m - probe.month] || 0) * inflator(probe.monthlyRate, m);
-        if (v > 0) perProject[p.id] = v;
+        if (slowedIds.has(p.id)) slowed += v; else normal += v;
       }
-      monthly.push({ m, funding, actualSpend: 0, arc: arcOn ? projectedArcAt(probe, m) : 0, perProject });
+      monthly.push({ m, funding, actualSpend: 0, arc: arcOn ? projectedArcAt(probe, m) : 0, normal, slowed });
     }
   }
 
   // bucket into periods (summing per-month values keeps totals exact at any granularity)
   const span = GRAN_SPAN[granularity] ?? 1;
   const nBuckets = Math.ceil(60 / span);
-  const periods = [], actualSpend = [], arc = [], perPeriodFunding = [], perPeriodRequirement = [];
-  const perProjectMap = {};
+  const periods = [], actualSpend = [], arc = [], normalSpend = [], slowedSpend = [], perPeriodFunding = [], perPeriodRequirement = [];
   for (let b = 0; b < nBuckets; b++) {
     const slice = monthly.slice(b * span, (b + 1) * span);
     periods.push({
@@ -2557,17 +2567,13 @@ function computeFundingAnalysis(sim, granularity = "M") {
       current: slice.some((r) => r.m === sim.month),
       past: slice.every((r) => r.m < sim.month),
     });
-    let f = 0, spendA = 0, arcSum = 0, req = 0;
+    let f = 0, spendA = 0, arcSum = 0, nrm = 0, slw = 0;
     for (const r of slice) {
-      f += r.funding; spendA += r.actualSpend; arcSum += r.arc;
-      req += r.actualSpend + r.arc;
-      if (r.perProject) for (const [id, v] of Object.entries(r.perProject)) {
-        if (!perProjectMap[id]) perProjectMap[id] = new Array(nBuckets).fill(0);
-        perProjectMap[id][b] += v;
-        req += v;
-      }
+      f += r.funding; spendA += r.actualSpend; arcSum += r.arc; nrm += r.normal; slw += r.slowed;
     }
-    perPeriodFunding.push(f); actualSpend.push(spendA); arc.push(arcSum); perPeriodRequirement.push(req);
+    perPeriodFunding.push(f); actualSpend.push(spendA); arc.push(arcSum);
+    normalSpend.push(nrm); slowedSpend.push(slw);
+    perPeriodRequirement.push(spendA + arcSum + nrm + slw);
   }
 
   // cumulatives, headroom, overload ranges
@@ -2586,11 +2592,8 @@ function computeFundingAnalysis(sim, granularity = "M") {
     if (last && last.toIdx === i - 1) { last.toIdx = i; last.toLabel = periods[i].label; last.worst = Math.min(last.worst, net[i]); }
     else overloadedRanges.push({ fromIdx: i, toIdx: i, fromLabel: periods[i].label, toLabel: periods[i].label, worst: net[i] });
   }
-  const perProject = sim.projects
-    .map((p, idx) => ({ id: p.id, title: p.title, color: projectColor(idx), values: perProjectMap[p.id] }))
-    .filter((p) => p.values);
   return {
-    granularity, periods, perProject, actualSpend, arc, perPeriodFunding, perPeriodRequirement,
+    granularity, periods, actualSpend, arc, normalSpend, slowedSpend, perPeriodFunding, perPeriodRequirement,
     cumulativeRequirement, cumulativeFunding, net, overloaded, overloadedRanges,
     totalRequirement: cr, totalFunding: cf,
   };
@@ -2650,19 +2653,18 @@ function CashFlowTab({ sim, gran, setGran }) {
   const required = totalDemandAt(sim, sim.month);
   const avail = sim.availableBalance;
   const net = avail - required;
-  const data = useMemo(() => analysis.periods.map((p, i) => {
-    const row = {
-      label: p.label,
-      actualSpend: +analysis.actualSpend[i].toFixed(3),
-      arc: +analysis.arc[i].toFixed(3),
-      cumReq: +analysis.cumulativeRequirement[i].toFixed(3),
-      cumFund: +analysis.cumulativeFunding[i].toFixed(3),
-    };
-    analysis.perProject.forEach((pr) => { row[pr.id] = +(pr.values[i] || 0).toFixed(3); });
-    return row;
-  }), [analysis]);
+  const data = useMemo(() => analysis.periods.map((p, i) => ({
+    label: p.label,
+    actualSpend: +analysis.actualSpend[i].toFixed(3),
+    normal: +analysis.normalSpend[i].toFixed(3),
+    slowed: +analysis.slowedSpend[i].toFixed(3),
+    arc: +analysis.arc[i].toFixed(3),
+    cumReq: +analysis.cumulativeRequirement[i].toFixed(3),
+    cumFund: +analysis.cumulativeFunding[i].toFixed(3),
+  })), [analysis]);
   const currentLabel = analysis.periods.find((p) => p.current)?.label;
   const hasActuals = analysis.actualSpend.some((v) => v > 0);
+  const hasSlowed = analysis.slowedSpend.some((v) => v > 0);
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", paddingRight: 2 }}>
       <div style={{ flexShrink: 0, display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 8 }}>
@@ -2684,25 +2686,25 @@ function CashFlowTab({ sim, gran, setGran }) {
             ))}
             {currentLabel && <ReferenceLine yAxisId="bars" x={currentLabel} stroke={T.action} strokeWidth={1.5} />}
             {hasActuals && <Bar yAxisId="bars" dataKey="actualSpend" name="Actual spend" stackId="spend" fill={T.faint} opacity={0.8} />}
-            {analysis.perProject.map((pr) => (
-              <Bar key={pr.id} yAxisId="bars" dataKey={pr.id} name={`${pr.id} · ${pr.title}`} stackId="spend" fill={pr.color} opacity={0.8} />
-            ))}
+            <Bar yAxisId="bars" dataKey="normal" name="Project spending" stackId="spend" fill={SPEND_NORMAL} opacity={0.85} />
+            {hasSlowed && <Bar yAxisId="bars" dataKey="slowed" name="Slowed projects" stackId="spend" fill={SPEND_SLOWED} opacity={0.85} />}
             {arcOn && <Bar yAxisId="bars" dataKey="arc" name="ARC (recurring)" stackId="spend" fill={T.arc} opacity={0.8} />}
-            <Line yAxisId="cum" type="monotone" dataKey="cumReq" name="Cumulative requirement" stroke={FUND_REQ} strokeWidth={2.5} dot={false} />
+            <Line yAxisId="cum" type="monotone" dataKey="cumReq" name="Total cash requirement (cum.)" stroke={FUND_BAD} strokeWidth={3.5} dot={false} />
             <Line yAxisId="cum" type="stepAfter" dataKey="cumFund" name="Cumulative funding" stroke={FUND_OK} strokeWidth={2.5} dot={false} />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
       <div style={{ flexShrink: 0, display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", fontSize: 11.5, color: T.muted, marginTop: 8 }}>
         {hasActuals && <span style={{ color: T.faint }}>■ Actual spend</span>}
-        {analysis.perProject.map((pr) => <span key={pr.id} style={{ color: pr.color }}>■ {pr.id}</span>)}
+        <span style={{ color: SPEND_NORMAL }}>■ Project spending</span>
+        {hasSlowed && <span style={{ color: SPEND_SLOWED }}>■ Slowed projects</span>}
         {arcOn && <span style={{ color: T.arc }}>■ ARC</span>}
-        <span style={{ color: FUND_REQ }}>— Cum. requirement</span>
+        <span style={{ color: FUND_BAD, fontWeight: 700 }}>— Total requirement</span>
         <span style={{ color: FUND_OK }}>— Cum. funding</span>
         <span style={{ color: T.action }}>▏Current period</span>
       </div>
       <ChartCaption>
-        Bars stack cash per period by project (left axis); purple = cumulative requirement, green step = cumulative funding (right axis). Red bands mark underfunded periods.
+        Bars show cash per period (left axis): blue = project spending, orange = slowed projects, purple = ARC. Thick red line = total cumulative cash requirement, green step = cumulative funding (right axis). Red bands mark underfunded periods.
       </ChartCaption>
       <div style={{ flexShrink: 0, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 10 }}>
         <Stat label={`Required · M${sim.month}`} value={money(required)} accent={required > avail ? T.expired : T.text} />
@@ -2840,24 +2842,46 @@ function GanttTab({ sim }) {
 }
 
 function SCurveTab({ sim }) {
-  const list = sim.projects.filter((p) => ["active", "completed", "suspended", "expired"].includes(p.state) && p.sCurveBaseline.length);
+  const list = sim.projects.filter((p) => ["active", "completed", "suspended", "expired"].includes(p.state) && p.sCurveBaseline.length && p.startMonth);
   const [pick, setPick] = useState("all");
   if (!list.length) return <Empty msg="Add and run projects to see their planned-versus-revised spend curves." />;
-  const cum = (arr) => { let s = 0, total = arr.reduce((a, b) => a + b, 0) || 1; return arr.map((v) => (s += v) / total); };
   const shown = pick === "all" ? list : list.filter((p) => p.id === pick);
-  const maxLen = Math.max(...shown.map((p) => Math.max(p.sCurveBaseline.length, (p.startMonth ? (p.durationCurrent || p.sCurveBaseline.length) : p.sCurveBaseline.length))));
+
+  // each project's curves live on the portfolio timeline: startMonth → its own finish month.
+  // value at month x = cumulative % of BAC at the END of month x, anchored at 0% on startMonth-1.
+  const curves = shown.map((p) => {
+    const bac = p.bacCurrent || 1;
+    // baseline (original plan): % of baseline total, startMonth → planned finish
+    const baseTotal = p.sCurveBaseline.reduce((a, b) => a + b, 0) || 1;
+    const base = { [p.startMonth - 1]: 0 };
+    let bSum = 0;
+    p.sCurveBaseline.forEach((v, k) => { bSum += v; base[p.startMonth + k] = (bSum / baseTotal) * 100; });
+    // current plan: recorded actual draws to date, then the remaining curve projected forward
+    const cur = { [p.startMonth - 1]: 0 };
+    const draws = p.drawHistory || [];
+    if (draws.length) {
+      let c = 0;
+      draws.forEach((d) => { c += d.nom; cur[d.m] = Math.min(100, (c / bac) * 100); });
+    } else if (sim.month > p.startMonth) {
+      // legacy saves without draw records: linear interpolation of what was consumed
+      const consumed = Math.min(1, p.nominalSpent / bac);
+      const elapsed = sim.month - p.startMonth;
+      for (let k = 1; k <= elapsed; k++) cur[p.startMonth + k - 1] = consumed * (k / elapsed) * 100;
+    }
+    let run = p.nominalSpent;
+    p.sCurve.forEach((v, k) => { run += v; cur[sim.month + k] = Math.min(100, (run / bac) * 100); });
+    // flat-fill gaps (suspended months have no draw) so the line pauses instead of breaking
+    const months = Object.keys(cur).map(Number);
+    const lastM = Math.max(...months);
+    for (let x = p.startMonth; x <= lastM; x++) if (cur[x] == null) cur[x] = cur[x - 1];
+    return { p, base, cur };
+  });
   const data = [];
-  for (let t = 0; t <= maxLen; t++) {
+  for (let t = 0; t <= 60; t++) {
     const row = { t };
-    shown.forEach((p) => {
-      const base = cum(p.sCurveBaseline);
-      // current plan = consumed so far implied + remaining curve
-      const consumed = p.nominalSpent / (p.bacCurrent || 1);
-      const remCum = cum(p.sCurve);
-      row[`${p.id}_b`] = t < base.length ? +(base[t] * 100).toFixed(1) : 100;
-      const elapsed = p.startMonth ? Math.max(0, sim.month - p.startMonth) : 0;
-      if (t <= elapsed) row[`${p.id}_a`] = +(Math.min(consumed, 1) * (t / Math.max(1, elapsed)) * 100).toFixed(1);
-      else { const k = t - elapsed - 1; row[`${p.id}_a`] = +(Math.min(1, consumed + (remCum[k] || 1) * (1 - consumed)) * 100).toFixed(1); }
+    curves.forEach(({ p, base, cur }) => {
+      if (base[t] != null) row[`${p.id}_b`] = +base[t].toFixed(1);
+      if (cur[t] != null) row[`${p.id}_a`] = +cur[t].toFixed(1);
     });
     data.push(row);
   }
@@ -2871,21 +2895,22 @@ function SCurveTab({ sim }) {
           </Chip>
         ))}
       </div>
-      <div className="sim-chart" style={{ flex: 1, minHeight: 0, maxHeight: 480 }}>
+      <div className="sim-chart" style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, maxHeight: 480 }}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
             <CartesianGrid stroke={T.lineSoft} vertical={false} />
-            <XAxis dataKey="t" stroke={T.faint} fontSize={11} tickLine={false} label={{ value: "months from start", position: "insideBottom", offset: -2, fontSize: 10, fill: T.faint }} />
+            <XAxis dataKey="t" stroke={T.faint} fontSize={11} tickLine={false} label={{ value: "month", position: "insideBottom", offset: -2, fontSize: 10, fill: T.faint }} />
             <YAxis stroke={T.faint} fontSize={11} tickLine={false} width={40} domain={[0, 100]} />
-            <Tooltip contentStyle={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12 }} />
-            {shown.map((p) => [
+            <Tooltip contentStyle={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12 }} labelFormatter={(m) => `Month ${m}`} />
+            <ReferenceLine x={sim.month} stroke={T.action} strokeWidth={1.5} />
+            {curves.map(({ p }) => [
               <Line key={p.id + "b"} type="monotone" dataKey={`${p.id}_b`} stroke={projectColorById(sim, p.id)} strokeWidth={1.5} strokeDasharray="4 4" dot={false} />,
               <Line key={p.id + "a"} type="monotone" dataKey={`${p.id}_a`} stroke={projectColorById(sim, p.id)} strokeWidth={2} dot={false} />,
             ])}
           </LineChart>
         </ResponsiveContainer>
       </div>
-      <div style={{ flexShrink: 0, textAlign: "center", fontSize: 11, color: T.muted, marginTop: 6 }}>dashed = original baseline · solid = current plan (cumulative % of BAC)</div>
+      <div style={{ flexShrink: 0, textAlign: "center", fontSize: 11, color: T.muted, marginTop: 6 }}>dashed = original baseline · solid = actuals + current plan (cumulative % of BAC) · ▏current month</div>
     </div>
   );
 }
