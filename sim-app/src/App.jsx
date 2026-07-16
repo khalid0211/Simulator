@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ReferenceLine, ResponsiveContainer,
+  ReferenceLine, ReferenceArea, ResponsiveContainer, ComposedChart, Cell,
 } from "recharts";
 import {
   Play, Save, FolderOpen, ChevronRight, AlertTriangle, Pause,
@@ -40,6 +40,18 @@ const T = { ...THEMES.light };
 function applyTheme(name) { Object.assign(T, THEMES[name] || THEMES.light); }
 
 const sc = (k) => T[k];                                   // state colour, live
+
+/* ---- per-project identity palette: one stable colour per project, shared across
+   every chart (cash-flow stacks, Gantt, S-curves). Indexed by the project's position
+   in the UNFILTERED sim.projects array so the colour never changes with state. ---- */
+const PROJECT_PALETTE = ["#3498db", "#667eea", "#28a745", "#6f42c1", "#e67e22", "#17a2b8", "#e83e8c", "#20c997"];
+const projectColor = (i) => PROJECT_PALETTE[((i % PROJECT_PALETTE.length) + PROJECT_PALETTE.length) % PROJECT_PALETTE.length];
+const projectColorById = (sim, id) => projectColor(sim.projects.findIndex((p) => p.id === id));
+/* semantic funding colours (match across charts, table, callout) */
+const FUND_REQ = "#6f42c1";      // cumulative cash requirement
+const FUND_OK = "#28a745";       // cumulative funding / positive headroom
+const FUND_BAD = "#dc3545";      // shortfall / overload
+const FUND_BAND = "rgba(220,53,69,0.12)";
 const dc = (t) => ({ add: T.completed, slow: T.suspended, speed: T.active, suspend: T.suspended, resume: T.active, abandon: T.expired, arc_reduce: T.arc, arc_restore: T.action, arc_cutoff: T.expired }[t] || T.muted);
 const STATE_LABEL = {
   available: "Available", active: "Active", suspended: "Suspended",
@@ -2502,68 +2514,197 @@ function projectedArcAt(probe, m) {
   return total;
 }
 
-function projectCashflow(sim) {
-  // history (actual) up to current month-1, then projection forward (read-only)
+/* ---- single funding analysis: one object drives the Cash Flow chart, the Funds tab
+   (headroom chart + schedule table), the tab warning dot and the preview adapter, so
+   they can never disagree. Requirement = actual demand+ARC from history for past
+   months, S-curve projection for future months. Funding = the release schedule
+   (fixed at setup), identical formula for past and future. Overload is defined on
+   CUMULATIVE funding vs CUMULATIVE requirement (money carries forward). ---- */
+const GRAN_SPAN = { M: 1, Q: 3, Y: 12 };
+function computeFundingAnalysis(sim, granularity = "M") {
   const arcOn = !!sim.config?.arcEnabled;
-  const series = [];
   const byMonth = {};
   sim.history.forEach((h) => { byMonth[h.month] = h; });
-  // projection clone
   const probe = clone(sim);
-  let bal = probe.availableBalance;
+  const pfreq = probe.config?.fundingFrequency ?? 3;
+
+  // monthly base series: actuals up to current month-1, projection forward
+  const monthly = [];
   for (let m = 1; m <= 60; m++) {
+    const funding = (m - 1) % pfreq === 0 ? (probe.releaseSchedule?.[(m - 1) / pfreq] ?? probe.quarterlyRelease ?? 0) : 0;
     if (m < probe.month) {
       const h = byMonth[m];
-      const arc = h?.arc ?? 0;
-      series.push({ month: m, required: h ? h.demand : 0, arc, available: h ? h.balanceAfter + h.demand + arc : null, actual: true });
+      monthly.push({ m, funding, actualSpend: h?.demand ?? 0, arc: h?.arc ?? 0, perProject: null });
     } else {
-      const pfreq = probe.config?.fundingFrequency ?? 3;
-      if (m > probe.month && (m - 1) % pfreq === 0) {
-        const qi = Math.floor((m - 1) / pfreq);
-        bal += probe.releaseSchedule?.[qi] ?? probe.quarterlyRelease;
+      const perProject = {};
+      for (const p of actives(probe)) {
+        const v = (p.sCurve[m - probe.month] || 0) * inflator(probe.monthlyRate, m);
+        if (v > 0) perProject[p.id] = v;
       }
-      const req = actives(probe).reduce((a, p) => a + (p.sCurve[m - probe.month] || 0) * inflator(probe.monthlyRate, m), 0);
-      const arc = arcOn ? projectedArcAt(probe, m) : 0;
-      series.push({ month: m, required: +req.toFixed(3), arc: +arc.toFixed(3), available: +Math.max(0, bal).toFixed(3), actual: false });
-      bal -= (req + arc);
+      monthly.push({ m, funding, actualSpend: 0, arc: arcOn ? projectedArcAt(probe, m) : 0, perProject });
     }
   }
-  return series;
+
+  // bucket into periods (summing per-month values keeps totals exact at any granularity)
+  const span = GRAN_SPAN[granularity] ?? 1;
+  const nBuckets = Math.ceil(60 / span);
+  const periods = [], actualSpend = [], arc = [], perPeriodFunding = [], perPeriodRequirement = [];
+  const perProjectMap = {};
+  for (let b = 0; b < nBuckets; b++) {
+    const slice = monthly.slice(b * span, (b + 1) * span);
+    periods.push({
+      key: `${granularity}${b + 1}`, label: `${granularity}${b + 1}`,
+      current: slice.some((r) => r.m === sim.month),
+      past: slice.every((r) => r.m < sim.month),
+    });
+    let f = 0, spendA = 0, arcSum = 0, req = 0;
+    for (const r of slice) {
+      f += r.funding; spendA += r.actualSpend; arcSum += r.arc;
+      req += r.actualSpend + r.arc;
+      if (r.perProject) for (const [id, v] of Object.entries(r.perProject)) {
+        if (!perProjectMap[id]) perProjectMap[id] = new Array(nBuckets).fill(0);
+        perProjectMap[id][b] += v;
+        req += v;
+      }
+    }
+    perPeriodFunding.push(f); actualSpend.push(spendA); arc.push(arcSum); perPeriodRequirement.push(req);
+  }
+
+  // cumulatives, headroom, overload ranges
+  const cumulativeRequirement = [], cumulativeFunding = [], net = [];
+  let cr = 0, cf = 0;
+  for (let i = 0; i < nBuckets; i++) {
+    cr += perPeriodRequirement[i]; cf += perPeriodFunding[i];
+    cumulativeRequirement.push(cr); cumulativeFunding.push(cf); net.push(cf - cr);
+  }
+  const eps = 1e-6 * Math.max(1, cr);   // relative epsilon: float noise never flags an overload
+  const overloaded = net.map((n) => n < -eps);
+  const overloadedRanges = [];
+  for (let i = 0; i < nBuckets; i++) {
+    if (!overloaded[i]) continue;
+    const last = overloadedRanges[overloadedRanges.length - 1];
+    if (last && last.toIdx === i - 1) { last.toIdx = i; last.toLabel = periods[i].label; last.worst = Math.min(last.worst, net[i]); }
+    else overloadedRanges.push({ fromIdx: i, toIdx: i, fromLabel: periods[i].label, toLabel: periods[i].label, worst: net[i] });
+  }
+  const perProject = sim.projects
+    .map((p, idx) => ({ id: p.id, title: p.title, color: projectColor(idx), values: perProjectMap[p.id] }))
+    .filter((p) => p.values);
+  return {
+    granularity, periods, perProject, actualSpend, arc, perPeriodFunding, perPeriodRequirement,
+    cumulativeRequirement, cumulativeFunding, net, overloaded, overloadedRanges,
+    totalRequirement: cr, totalFunding: cf,
+  };
 }
 
-function CashFlowTab({ sim }) {
-  const data = useMemo(() => projectCashflow(sim), [sim]);
+/* legacy monthly view of the analysis — kept as the data source for ProjectPreviewModal */
+function projectCashflow(sim) {
+  const a = computeFundingAnalysis(sim, "M");
+  return a.periods.map((p, i) => ({
+    month: i + 1,
+    required: +(a.perPeriodRequirement[i] - a.arc[i]).toFixed(3),
+    arc: +a.arc[i].toFixed(3),
+    // balance available before this month's spend = headroom after it + the spend itself
+    available: +Math.max(0, a.net[i] + a.perPeriodRequirement[i]).toFixed(3),
+    actual: p.past,
+  }));
+}
+
+/* ---- shared funding-display UI ---- */
+function FundingCallout({ analysis }) {
+  const over = analysis.overloadedRanges;
+  const ok = over.length === 0;
+  const color = ok ? FUND_OK : FUND_BAD;
+  const Icon = ok ? CheckCheck : AlertTriangle;
+  return (
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 7, fontSize: 12, color,
+      background: color + "14", border: `1px solid ${color}44`, borderRadius: 8, padding: "6px 10px" }}>
+      <Icon size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+      <span>
+        {ok
+          ? "No funding overload — cumulative funding covers the cash requirement in every period."
+          : <>Funding overload: {over.map((r) =>
+              `${r.fromLabel}${r.toLabel !== r.fromLabel ? ` – ${r.toLabel}` : ""} (worst shortfall ${money(-r.worst)})`).join(" · ")}</>}
+      </span>
+    </div>
+  );
+}
+
+const GRAN_LABELS = { M: "Monthly", Q: "Quarterly", Y: "Yearly" };
+function GranToggle({ gran, setGran }) {
+  return (
+    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+      {Object.keys(GRAN_LABELS).map((g) => (
+        <Chip key={g} active={gran === g} onClick={() => setGran(g)}>{GRAN_LABELS[g]}</Chip>
+      ))}
+    </div>
+  );
+}
+
+const ChartCaption = ({ children }) => (
+  <div style={{ flexShrink: 0, textAlign: "center", fontSize: 11, color: T.faint, marginTop: 4 }}>{children}</div>
+);
+
+function CashFlowTab({ sim, gran, setGran }) {
+  const analysis = useMemo(() => computeFundingAnalysis(sim, gran), [sim, gran]);
   const arcOn = !!sim.config?.arcEnabled;
   const required = totalDemandAt(sim, sim.month);
   const avail = sim.availableBalance;
   const net = avail - required;
+  const data = useMemo(() => analysis.periods.map((p, i) => {
+    const row = {
+      label: p.label,
+      actualSpend: +analysis.actualSpend[i].toFixed(3),
+      arc: +analysis.arc[i].toFixed(3),
+      cumReq: +analysis.cumulativeRequirement[i].toFixed(3),
+      cumFund: +analysis.cumulativeFunding[i].toFixed(3),
+    };
+    analysis.perProject.forEach((pr) => { row[pr.id] = +(pr.values[i] || 0).toFixed(3); });
+    return row;
+  }), [analysis]);
+  const currentLabel = analysis.periods.find((p) => p.current)?.label;
+  const hasActuals = analysis.actualSpend.some((v) => v > 0);
   return (
-    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-      <div className="sim-chart" style={{ flex: 1, minHeight: 0, maxHeight: 480 }}>
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", paddingRight: 2 }}>
+      <div style={{ flexShrink: 0, display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 8 }}>
+        <div style={{ flex: 1, minWidth: 0 }}><FundingCallout analysis={analysis} /></div>
+        <GranToggle gran={gran} setGran={setGran} />
+      </div>
+      <div className="sim-chart" style={{ flexGrow: 1, flexShrink: 1, minHeight: 200, maxHeight: 440 }}>
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
+          <ComposedChart data={data} margin={{ top: 8, right: 0, left: -8, bottom: 0 }} barCategoryGap="25%">
             <CartesianGrid stroke={T.lineSoft} vertical={false} />
-            <XAxis dataKey="month" stroke={T.faint} fontSize={11} tickLine={false} />
-            <YAxis stroke={T.faint} fontSize={11} tickLine={false} width={44} />
+            <XAxis dataKey="label" stroke={T.faint} fontSize={10.5} tickLine={false} />
+            <YAxis yAxisId="bars" stroke={T.faint} fontSize={11} tickLine={false} width={44} />
+            <YAxis yAxisId="cum" orientation="right" stroke={T.faint} fontSize={11} tickLine={false} width={48} />
             <Tooltip contentStyle={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12 }}
-              labelStyle={{ color: T.muted }} formatter={(v, n) => [money(v), n === "required" ? "Required" : n === "arc" ? "ARC (recurring)" : "Available"]} labelFormatter={(m) => `Month ${m}`} />
-            {[3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57].map((m) => (
-              <ReferenceLine key={m} x={m + 1} stroke={T.lineSoft} strokeDasharray="2 4" />
+              labelStyle={{ color: T.muted }} formatter={(v, n) => [money(v), n]} />
+            {analysis.overloadedRanges.map((r) => (
+              <ReferenceArea key={r.fromIdx} yAxisId="bars" x1={analysis.periods[r.fromIdx].label} x2={analysis.periods[r.toIdx].label}
+                fill={FUND_BAND} stroke="none" />
             ))}
-            <ReferenceLine x={sim.month} stroke={T.action} strokeWidth={1.5} />
-            <Line type="monotone" dataKey="available" stroke={T.completed} strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="required" stroke={T.expired} strokeWidth={2} dot={false} />
-            {arcOn && <Line type="monotone" dataKey="arc" stroke={T.arc} strokeWidth={2} dot={false} />}
-          </LineChart>
+            {currentLabel && <ReferenceLine yAxisId="bars" x={currentLabel} stroke={T.action} strokeWidth={1.5} />}
+            {hasActuals && <Bar yAxisId="bars" dataKey="actualSpend" name="Actual spend" stackId="spend" fill={T.faint} opacity={0.8} />}
+            {analysis.perProject.map((pr) => (
+              <Bar key={pr.id} yAxisId="bars" dataKey={pr.id} name={`${pr.id} · ${pr.title}`} stackId="spend" fill={pr.color} opacity={0.8} />
+            ))}
+            {arcOn && <Bar yAxisId="bars" dataKey="arc" name="ARC (recurring)" stackId="spend" fill={T.arc} opacity={0.8} />}
+            <Line yAxisId="cum" type="monotone" dataKey="cumReq" name="Cumulative requirement" stroke={FUND_REQ} strokeWidth={2.5} dot={false} />
+            <Line yAxisId="cum" type="stepAfter" dataKey="cumFund" name="Cumulative funding" stroke={FUND_OK} strokeWidth={2.5} dot={false} />
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
-      <div style={{ flexShrink: 0, display: "flex", gap: 16, justifyContent: "center", fontSize: 12, color: T.muted, marginTop: 8 }}>
-        <span style={{ color: T.completed }}>● Available funds</span>
-        <span style={{ color: T.expired }}>● Required spend</span>
-        {arcOn && <span style={{ color: T.arc }}>● ARC (recurring)</span>}
-        <span style={{ color: T.action }}>▏Current month</span>
+      <div style={{ flexShrink: 0, display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", fontSize: 11.5, color: T.muted, marginTop: 8 }}>
+        {hasActuals && <span style={{ color: T.faint }}>■ Actual spend</span>}
+        {analysis.perProject.map((pr) => <span key={pr.id} style={{ color: pr.color }}>■ {pr.id}</span>)}
+        {arcOn && <span style={{ color: T.arc }}>■ ARC</span>}
+        <span style={{ color: FUND_REQ }}>— Cum. requirement</span>
+        <span style={{ color: FUND_OK }}>— Cum. funding</span>
+        <span style={{ color: T.action }}>▏Current period</span>
       </div>
-      <div style={{ flexShrink: 0, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 12 }}>
+      <ChartCaption>
+        Bars stack cash per period by project (left axis); purple = cumulative requirement, green step = cumulative funding (right axis). Red bands mark underfunded periods.
+      </ChartCaption>
+      <div style={{ flexShrink: 0, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 10 }}>
         <Stat label={`Required · M${sim.month}`} value={money(required)} accent={required > avail ? T.expired : T.text} />
         <Stat label="Available" value={money(avail)} accent={T.completed} />
         <Stat label="Net this month" value={`${net >= 0 ? "+" : ""}${money(net)}`} accent={net >= 0 ? T.completed : T.expired} />
@@ -2572,61 +2713,79 @@ function CashFlowTab({ sim }) {
   );
 }
 
-function monthlyFunds(sim) {
-  const arcOn = !!sim.config?.arcEnabled;
-  const byMonth = {};
-  sim.history.forEach((h) => { byMonth[h.month] = h; });
-  const probe = clone(sim);
-  let bal = probe.availableBalance;
-  const series = [];
-  for (let m = 1; m <= 60; m++) {
-    if (m < probe.month) {
-      const h = byMonth[m];
-      const arc = h?.arc ?? 0;
-      series.push({ month: m, available: h ? +(h.balanceAfter + h.demand + arc).toFixed(3) : 0, used: h ? +h.demand.toFixed(3) : 0, arc: +arc.toFixed(3), actual: true });
-    } else {
-      const pfreq = probe.config?.fundingFrequency ?? 3;
-      if (m > probe.month && (m - 1) % pfreq === 0) {
-        const qi = Math.floor((m - 1) / pfreq);
-        bal += probe.releaseSchedule?.[qi] ?? probe.quarterlyRelease;
-      }
-      const used = actives(probe).reduce((a, p) => a + (p.sCurve[m - probe.month] || 0) * inflator(probe.monthlyRate, m), 0);
-      const arc = arcOn ? projectedArcAt(probe, m) : 0;
-      series.push({ month: m, available: +Math.max(0, bal).toFixed(3), used: +used.toFixed(3), arc: +arc.toFixed(3), actual: false });
-      bal -= (used + arc);
-    }
-  }
-  return series;
-}
-
-function FundsTab({ sim }) {
-  const data = useMemo(() => monthlyFunds(sim), [sim]);
-  const arcOn = !!sim.config?.arcEnabled;
+function FundsTab({ sim, gran, setGran }) {
+  const analysis = useMemo(() => computeFundingAnalysis(sim, gran), [sim, gran]);
+  const data = useMemo(() => analysis.periods.map((p, i) => ({ label: p.label, net: +analysis.net[i].toFixed(3) })), [analysis]);
+  const currentLabel = analysis.periods.find((p) => p.current)?.label;
+  const finalNet = analysis.totalFunding - analysis.totalRequirement;
+  const cell = { padding: "4px 10px", textAlign: "right", ...mono };
+  const head = { ...cell, position: "sticky", top: 0, background: T.panel, color: T.muted, fontWeight: 600,
+    textAlign: "right", fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".04em", borderBottom: `1px solid ${T.line}`, zIndex: 1 };
   return (
-    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-      <div className="sim-chart" style={{ flex: 1, minHeight: 0, maxHeight: 480 }}>
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", paddingRight: 2 }}>
+      <div style={{ flexShrink: 0, display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 8 }}>
+        <div style={{ flex: 1, minWidth: 0 }}><FundingCallout analysis={analysis} /></div>
+        <GranToggle gran={gran} setGran={setGran} />
+      </div>
+      <div className="sim-chart" style={{ flexGrow: 0, flexShrink: 0, height: 210 }}>
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} margin={{ top: 8, right: 12, left: -8, bottom: 0 }} barCategoryGap="30%">
+          <BarChart data={data} margin={{ top: 8, right: 12, left: -8, bottom: 0 }} barCategoryGap="20%">
             <CartesianGrid stroke={T.lineSoft} vertical={false} />
-            <XAxis dataKey="month" stroke={T.faint} fontSize={11} tickLine={false} />
+            <XAxis dataKey="label" stroke={T.faint} fontSize={10.5} tickLine={false} />
             <YAxis stroke={T.faint} fontSize={11} tickLine={false} width={44} />
             <Tooltip contentStyle={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12 }}
-              labelStyle={{ color: T.muted }} formatter={(v, n) => [money(v), n === "available" ? "Funds Available" : n === "arc" ? "ARC (recurring)" : "Funds Used"]} labelFormatter={(m) => `Month ${m}`} />
-            {[3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57].map((m) => (
-              <ReferenceLine key={m} x={m + 1} stroke={T.lineSoft} strokeDasharray="2 4" />
-            ))}
-            <ReferenceLine x={sim.month} stroke={T.action} strokeWidth={1.5} />
-            <Bar dataKey="available" fill={T.completed} opacity={0.75} radius={[2, 2, 0, 0]} />
-            <Bar dataKey="used" fill={T.expired} opacity={0.75} radius={[2, 2, 0, 0]} />
-            {arcOn && <Bar dataKey="arc" fill={T.arc} opacity={0.75} radius={[2, 2, 0, 0]} />}
+              labelStyle={{ color: T.muted }} formatter={(v) => [money(v), "Headroom"]} />
+            <ReferenceLine y={0} stroke="#5a6268" strokeWidth={1} />
+            {currentLabel && <ReferenceLine x={currentLabel} stroke={T.action} strokeWidth={1.5} />}
+            <Bar dataKey="net" name="Headroom" opacity={0.85} radius={[2, 2, 0, 0]}>
+              {data.map((_, i) => <Cell key={i} fill={analysis.overloaded[i] ? FUND_BAD : FUND_OK} />)}
+            </Bar>
           </BarChart>
         </ResponsiveContainer>
       </div>
-      <div style={{ flexShrink: 0, display: "flex", gap: 16, justifyContent: "center", fontSize: 12, color: T.muted, marginTop: 8 }}>
-        <span style={{ color: T.completed }}>■ Funds Available</span>
-        <span style={{ color: T.expired }}>■ Funds Used</span>
-        {arcOn && <span style={{ color: T.arc }}>■ ARC (recurring)</span>}
-        <span style={{ color: T.action }}>▏Current month</span>
+      <ChartCaption>
+        Net funding headroom = cumulative funding − cumulative cash requirement. Red bars below zero are the periods where the portfolio runs out of money.
+      </ChartCaption>
+      <div style={{ flexGrow: 1, flexShrink: 0, flexBasis: "auto", minHeight: 150, maxHeight: 340, overflow: "auto", marginTop: 10, border: `1px solid ${T.lineSoft}`, borderRadius: 8 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5, color: T.text }}>
+          <thead>
+            <tr>
+              <th style={{ ...head, textAlign: "left" }}>Period</th>
+              <th style={head}>Funding release</th>
+              <th style={head}>Cash requirement</th>
+              <th style={head}>Cumulative funding</th>
+              <th style={head}>Headroom</th>
+            </tr>
+          </thead>
+          <tbody>
+            {analysis.periods.map((p, i) => (
+              <tr key={p.key} style={{
+                background: analysis.overloaded[i] ? "rgba(220,53,69,0.07)" : p.current ? T.panel2 : "transparent",
+                color: p.past ? T.faint : T.text,
+                borderBottom: `1px solid ${T.lineSoft}`,
+              }}>
+                <td style={{ ...cell, textAlign: "left" }}>
+                  {p.label}
+                  {p.past && <span style={{ fontSize: 9.5, color: T.faint, marginLeft: 5 }}>actual</span>}
+                  {p.current && <span style={{ fontSize: 9.5, color: T.action, marginLeft: 5 }}>now</span>}
+                </td>
+                <td style={cell}>{analysis.perPeriodFunding[i] ? money(analysis.perPeriodFunding[i]) : "—"}</td>
+                <td style={cell}>{money(analysis.perPeriodRequirement[i])}</td>
+                <td style={cell}>{money(analysis.cumulativeFunding[i])}</td>
+                <td style={{ ...cell, color: analysis.overloaded[i] ? FUND_BAD : FUND_OK, fontWeight: 600 }}>{money(analysis.net[i])}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr style={{ position: "sticky", bottom: 0, background: T.panel, fontWeight: 700, borderTop: `2px solid ${T.line}` }}>
+              <td style={{ ...cell, textAlign: "left" }}>Total</td>
+              <td style={cell}>{money(analysis.totalFunding)}</td>
+              <td style={cell}>{money(analysis.totalRequirement)}</td>
+              <td style={cell}>{money(analysis.totalFunding)}</td>
+              <td style={{ ...cell, color: finalNet < 0 ? FUND_BAD : FUND_OK }}>{money(finalNet)}</td>
+            </tr>
+          </tfoot>
+        </table>
       </div>
     </div>
   );
@@ -2648,15 +2807,17 @@ function GanttTab({ sim }) {
         } else end = Math.min(60, start + (p.durationCurrent || 0));
         const left = ((start - 1) / W) * 100;
         const width = Math.max(1.5, (((end || start) - start + 1) / W) * 100);
-        const color = sc(p.state);
+        const color = projectColorById(sim, p.id);
+        const dimmed = p.state === "suspended" || p.state === "abandoned" || p.state === "expired";
         return (
           <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
-            <div style={{ width: 116, flexShrink: 0, fontSize: 11.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            <div style={{ width: 128, flexShrink: 0, fontSize: 11.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              <span title={STATE_LABEL[p.state]} style={{ color: sc(p.state), fontSize: 9 }}>●</span>{" "}
               <span style={{ color: T.faint, ...mono }}>{p.id}</span> {p.title}
             </div>
             <div style={{ position: "relative", flex: 1, height: 18, background: T.panel2, borderRadius: 4 }}>
               <div style={{ position: "absolute", left: `${((sim.month - 1) / W) * 100}%`, top: -2, bottom: -2, width: 1.5, background: T.action }} />
-              <div style={{ position: "absolute", left: `${left}%`, width: `${width}%`, top: 2, bottom: 2, background: color + "cc", borderRadius: 3, border: `1px solid ${color}` }}>
+              <div style={{ position: "absolute", left: `${left}%`, width: `${width}%`, top: 2, bottom: 2, background: color + (dimmed ? "66" : "cc"), borderRadius: 3, border: `1px solid ${color}` }}>
                 {[0.25, 0.5, 0.75].map((m) => (
                   <div key={m} title={`${m * 100}%`} style={{ position: "absolute", left: `${m * 100}%`, top: 0, bottom: 0, width: 1, background: p.milestones.includes(m * 100) ? "#fff" : "#ffffff55" }} />
                 ))}
@@ -2668,7 +2829,8 @@ function GanttTab({ sim }) {
           </div>
         );
       })}
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 11, color: T.muted, marginTop: 10 }}>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", fontSize: 11, color: T.muted, marginTop: 10 }}>
+        <span style={{ color: T.faint }}>bar colour = project · dot = status:</span>
         {Object.entries(STATE_LABEL).filter(([k]) => k !== "available").map(([k, l]) => (
           <span key={k} style={{ color: sc(k) }}>● {l}</span>
         ))}
@@ -2703,7 +2865,11 @@ function SCurveTab({ sim }) {
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
       <div style={{ flexShrink: 0, display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
         <Chip active={pick === "all"} onClick={() => setPick("all")}>All</Chip>
-        {list.map((p) => <Chip key={p.id} active={pick === p.id} onClick={() => setPick(p.id)} color={sc(p.state)}>{p.id}</Chip>)}
+        {list.map((p) => (
+          <Chip key={p.id} active={pick === p.id} onClick={() => setPick(p.id)} color={projectColorById(sim, p.id)}>
+            <span title={STATE_LABEL[p.state]} style={{ color: sc(p.state), fontSize: 8 }}>●</span> {p.id}
+          </Chip>
+        ))}
       </div>
       <div className="sim-chart" style={{ flex: 1, minHeight: 0, maxHeight: 480 }}>
         <ResponsiveContainer width="100%" height="100%">
@@ -2713,8 +2879,8 @@ function SCurveTab({ sim }) {
             <YAxis stroke={T.faint} fontSize={11} tickLine={false} width={40} domain={[0, 100]} />
             <Tooltip contentStyle={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12 }} />
             {shown.map((p) => [
-              <Line key={p.id + "b"} type="monotone" dataKey={`${p.id}_b`} stroke={sc(p.state)} strokeWidth={1.5} strokeDasharray="4 4" dot={false} />,
-              <Line key={p.id + "a"} type="monotone" dataKey={`${p.id}_a`} stroke={sc(p.state)} strokeWidth={2} dot={false} />,
+              <Line key={p.id + "b"} type="monotone" dataKey={`${p.id}_b`} stroke={projectColorById(sim, p.id)} strokeWidth={1.5} strokeDasharray="4 4" dot={false} />,
+              <Line key={p.id + "a"} type="monotone" dataKey={`${p.id}_a`} stroke={projectColorById(sim, p.id)} strokeWidth={2} dot={false} />,
             ])}
           </LineChart>
         </ResponsiveContainer>
@@ -3335,6 +3501,10 @@ const TABS = [
 export default function App() {
   const [sim, setSim] = useState(null);
   const [tab, setTab] = useState("cash");
+  const [gran, setGranState] = useState(() => {
+    try { return GRAN_SPAN[localStorage.getItem("sim.granularity")] ? localStorage.getItem("sim.granularity") : "M"; } catch { return "M"; }
+  });
+  const setGran = (g) => { setGranState(g); try { localStorage.setItem("sim.granularity", g); } catch { /* private mode */ } };
   const [leftTab, setLeftTab] = useState("portfolio");
   const [slowTarget, setSlowTarget] = useState(null);
   const [speedTarget, setSpeedTarget] = useState(null);
@@ -3368,6 +3538,14 @@ export default function App() {
   }, [previewProject]);
 
   const commit = (mut) => setSim((prev) => { const next = clone(prev); mut(next); return next; });
+
+  // cash-crunch warning dot: any current-or-future period where cumulative funding
+  // falls short of the cumulative cash requirement
+  const crunchAhead = useMemo(() => {
+    if (!sim || sim.status === "ended") return false;
+    const a = computeFundingAnalysis(sim, "M");
+    return a.overloaded.some((o, i) => o && i + 1 >= sim.month);
+  }, [sim]);
 
   const start = (cfg) => { setSim(newSim(cfg)); setTab("cash"); };
   const resume = async () => { const s = await loadSession(); if (s) setSim(s); };
@@ -3584,11 +3762,7 @@ export default function App() {
           <div style={{ display: "flex", flexShrink: 0, borderBottom: `1px solid ${T.line}` }}>
             {TABS.map((t) => {
               const Icon = t.icon;
-              // cash-crunch warning dot: future month where required > available
-              const hasCrunch = t.id === "cash" && (() => {
-                const cf = projectCashflow(sim);
-                return cf.some((row) => !row.actual && row.month > sim.month && row.required > row.available + 1e-6);
-              })();
+              const hasCrunch = t.id === "cash" && crunchAhead;
               return (
                 <button key={t.id} onClick={() => setTab(t.id)} style={{
                   flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
@@ -3606,8 +3780,8 @@ export default function App() {
             <div style={{ flexShrink: 0, fontSize: 11, color: T.faint, marginBottom: 10 }}>
               Next {FREQ_SHORT[simFreq]?.toLowerCase() ?? "quarterly"} release: Month {nextQ <= 60 ? nextQ : "—"} · {money(sim.quarterlyRelease)}
             </div>
-            {tab === "cash" && <CashFlowTab sim={sim} />}
-            {tab === "funds" && <FundsTab sim={sim} />}
+            {tab === "cash" && <CashFlowTab sim={sim} gran={gran} setGran={setGran} />}
+            {tab === "funds" && <FundsTab sim={sim} gran={gran} setGran={setGran} />}
             {tab === "gantt" && <GanttTab sim={sim} />}
             {tab === "scurve" && <SCurveTab sim={sim} />}
             {tab === "kpi" && <KpiTab sim={sim} />}
