@@ -2856,26 +2856,45 @@ function SCurveTab({ sim }) {
     const base = { [p.startMonth - 1]: 0 };
     let bSum = 0;
     p.sCurveBaseline.forEach((v, k) => { bSum += v; base[p.startMonth + k] = (bSum / baseTotal) * 100; });
-    // current plan: recorded actual draws to date, then the remaining curve projected forward
-    const cur = { [p.startMonth - 1]: 0 };
+    // current plan: recorded actual draws to date, then the remaining curve projected forward.
+    // abs = cumulative nominal spend (also feeds the portfolio-total curve); cur = % of BAC.
+    const abs = { [p.startMonth - 1]: 0 };
     const draws = p.drawHistory || [];
     if (draws.length) {
       let c = 0;
-      draws.forEach((d) => { c += d.nom; cur[d.m] = Math.min(100, (c / bac) * 100); });
+      draws.forEach((d) => { c += d.nom; abs[d.m] = c; });
     } else if (sim.month > p.startMonth) {
       // legacy saves without draw records: linear interpolation of what was consumed
       const consumed = Math.min(1, p.nominalSpent / bac);
       const elapsed = sim.month - p.startMonth;
-      for (let k = 1; k <= elapsed; k++) cur[p.startMonth + k - 1] = consumed * (k / elapsed) * 100;
+      for (let k = 1; k <= elapsed; k++) abs[p.startMonth + k - 1] = consumed * bac * (k / elapsed);
     }
     let run = p.nominalSpent;
-    p.sCurve.forEach((v, k) => { run += v; cur[sim.month + k] = Math.min(100, (run / bac) * 100); });
+    p.sCurve.forEach((v, k) => { run += v; abs[sim.month + k] = run; });
     // flat-fill gaps (suspended months have no draw) so the line pauses instead of breaking
-    const months = Object.keys(cur).map(Number);
-    const lastM = Math.max(...months);
-    for (let x = p.startMonth; x <= lastM; x++) if (cur[x] == null) cur[x] = cur[x - 1];
-    return { p, base, cur };
+    const lastM = Math.max(...Object.keys(abs).map(Number));
+    for (let x = p.startMonth; x <= lastM; x++) if (abs[x] == null) abs[x] = abs[x - 1];
+    const cur = {};
+    Object.entries(abs).forEach(([x, v]) => { cur[x] = Math.min(100, (v / bac) * 100); });
+    return { p, base, cur, abs, bac, lastM };
   });
+  // portfolio total (All view): every project's cumulative spend summed, as % of combined BAC;
+  // a finished project's spend carries forward so the total never dips.
+  const isAll = pick === "all";
+  let total = null;
+  if (isAll) {
+    const totalBac = curves.reduce((a, c) => a + c.bac, 0) || 1;
+    const maxLast = Math.min(60, Math.max(...curves.map((c) => c.lastM)));
+    total = {};
+    for (let x = 0; x <= maxLast; x++) {
+      let s = 0;
+      for (const c of curves) {
+        if (x < c.p.startMonth - 1) continue;
+        s += c.abs[Math.min(x, c.lastM)] ?? 0;
+      }
+      total[x] = Math.min(100, (s / totalBac) * 100);
+    }
+  }
   const data = [];
   for (let t = 0; t <= 60; t++) {
     const row = { t };
@@ -2883,6 +2902,7 @@ function SCurveTab({ sim }) {
       if (base[t] != null) row[`${p.id}_b`] = +base[t].toFixed(1);
       if (cur[t] != null) row[`${p.id}_a`] = +cur[t].toFixed(1);
     });
+    if (total && total[t] != null) row.total = +total[t].toFixed(1);
     data.push(row);
   }
   return (
@@ -2903,14 +2923,23 @@ function SCurveTab({ sim }) {
             <YAxis stroke={T.faint} fontSize={11} tickLine={false} width={40} domain={[0, 100]} />
             <Tooltip contentStyle={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12 }} labelFormatter={(m) => `Month ${m}`} />
             <ReferenceLine x={sim.month} stroke={T.action} strokeWidth={1.5} />
-            {curves.map(({ p }) => [
-              <Line key={p.id + "b"} type="monotone" dataKey={`${p.id}_b`} stroke={projectColorById(sim, p.id)} strokeWidth={1.5} strokeDasharray="4 4" dot={false} />,
-              <Line key={p.id + "a"} type="monotone" dataKey={`${p.id}_a`} stroke={projectColorById(sim, p.id)} strokeWidth={2} dot={false} />,
-            ])}
+            {isAll
+              ? curves.map(({ p }) => (
+                  <Line key={p.id + "a"} type="monotone" dataKey={`${p.id}_a`} stroke={projectColorById(sim, p.id)} strokeOpacity={0.45} strokeWidth={1.5} strokeDasharray="2 4" dot={false} />
+                ))
+              : curves.map(({ p }) => [
+                  <Line key={p.id + "b"} type="monotone" dataKey={`${p.id}_b`} stroke={projectColorById(sim, p.id)} strokeWidth={1.5} strokeDasharray="4 4" dot={false} />,
+                  <Line key={p.id + "a"} type="monotone" dataKey={`${p.id}_a`} stroke={projectColorById(sim, p.id)} strokeWidth={2} dot={false} />,
+                ])}
+            {isAll && <Line type="monotone" dataKey="total" name="Portfolio total" stroke={T.action} strokeWidth={3} dot={false} />}
           </LineChart>
         </ResponsiveContainer>
       </div>
-      <div style={{ flexShrink: 0, textAlign: "center", fontSize: 11, color: T.muted, marginTop: 6 }}>dashed = original baseline · solid = actuals + current plan (cumulative % of BAC) · ▏current month</div>
+      <div style={{ flexShrink: 0, textAlign: "center", fontSize: 11, color: T.muted, marginTop: 6 }}>
+        {isAll
+          ? "dotted = each project (actuals + current plan) · thick solid = portfolio total (cumulative % of combined BAC) · ▏current month"
+          : "dashed = original baseline · solid = actuals + current plan (cumulative % of BAC) · ▏current month"}
+      </div>
     </div>
   );
 }
