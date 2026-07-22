@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ReferenceLine, ReferenceArea, ResponsiveContainer, ComposedChart, Cell,
@@ -8,8 +8,10 @@ import {
   Trash2, RotateCcw, Gauge, Plus, X, TrendingUp, BarChart3,
   Activity, LayoutGrid, Flag, ArrowRight, Award, Lightbulb, Sun, Moon,
   FastForward, Rewind, BookOpen, FileText, Loader, Eye, Target, Zap,
-  MoreHorizontal, CheckCheck,
+  MoreHorizontal, CheckCheck, Building2,
 } from "lucide-react";
+
+const DevelopmentMapTab = lazy(() => import("./devmap/DevelopmentMapTab.jsx"));
 
 /* ============================================================
    THEME — portfolio-controls panel (light default, dark optional)
@@ -3549,6 +3551,7 @@ const TABS = [
   { id: "funds", label: "Funds", icon: BarChart3 },
   { id: "gantt", label: "Gantt", icon: LayoutGrid },
   { id: "scurve", label: "S-Curves", icon: Activity },
+  { id: "devmap", label: "Development Map", icon: Building2 },
   { id: "kpi", label: "KPIs", icon: Gauge },
 ];
 
@@ -3838,6 +3841,24 @@ export default function App() {
             {tab === "funds" && <FundsTab sim={sim} gran={gran} setGran={setGran} />}
             {tab === "gantt" && <GanttTab sim={sim} />}
             {tab === "scurve" && <SCurveTab sim={sim} />}
+            {tab === "devmap" && (
+              <Suspense fallback={<div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: T.muted, fontSize: 13 }}>Loading Development Map…</div>}>
+                <DevelopmentMapTab
+                  sim={sim}
+                  theme={theme}
+                  actions={{
+                    onAdd:     (id) => commit((n) => addProject(n, id)),
+                    onSuspend: (id) => commit((n) => suspendProject(n, id)),
+                    onResume:  (id) => commit((n) => resumeProject(n, id)),
+                    onAbandon: (id) => commit((n) => abandonProject(n, id)),
+                    onRestore: (id) => commit((n) => restoreArcFunding(n, id)),
+                    onSlow:    (p)  => setSlowTarget(p),
+                    onSpeed:   (p)  => setSpeedTarget(p),
+                    onPreview: (p)  => setPreviewProject(p),
+                  }}
+                />
+              </Suspense>
+            )}
             {tab === "kpi" && <KpiTab sim={sim} />}
           </div>
         </Panel>
