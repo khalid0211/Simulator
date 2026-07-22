@@ -52,8 +52,9 @@ export default function MapLegend({ metric, setMetric, chrome }) {
         </div>
       </div>
 
-      {/* Status + shape legends — bottom centre, two separate panels */}
-      <div style={{ position: "absolute", bottom: 10, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "flex-end", justifyContent: "center", flexWrap: "wrap", gap: 10, maxWidth: "96%", fontSize: 10.5 }}>
+      {/* Status + shape legends — full-width bottom bar: status pinned left,
+          shape pinned right */}
+      <div style={{ position: "absolute", bottom: 10, left: 12, right: 12, display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 10, fontSize: 10.5 }}>
         {/* Status panel — 4 across */}
         <div style={{ ...bar, display: "grid", gridTemplateColumns: "repeat(4, auto)", gap: "4px 14px", padding: "8px 14px" }}>
           {STATE_ORDER.map((s) => (
