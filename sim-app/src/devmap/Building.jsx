@@ -65,6 +65,8 @@ export default function Building({
   color,         // status colour
   padColor,      // plot pad colour (scene chrome)
   accent,        // selection ring colour
+  addable,       // true → project can be added right now (gold highlighted base)
+  addColor,      // gold highlight colour
   selected,
   onSelect,      // (id) => void
   onHover,       // (id | null) => void
@@ -77,10 +79,16 @@ export default function Building({
 
   return (
     <group position={[building.x, 0, building.z]}>
-      {/* plot pad */}
-      <mesh position={[0, 0.06, 0]} receiveShadow>
-        <boxGeometry args={[fp * 1.3, 0.12, fp * 1.3]} />
-        <meshStandardMaterial color={padColor} roughness={0.95} metalness={0} />
+      {/* plot pad — gold + glowing when the project can be added right now */}
+      <mesh position={[0, addable ? 0.09 : 0.06, 0]} receiveShadow>
+        <boxGeometry args={[fp * (addable ? 1.5 : 1.3), addable ? 0.18 : 0.12, fp * (addable ? 1.5 : 1.3)]} />
+        <meshStandardMaterial
+          color={addable ? addColor : padColor}
+          emissive={addable ? addColor : "#000000"}
+          emissiveIntensity={addable ? 0.5 : 0}
+          roughness={addable ? 0.5 : 0.95}
+          metalness={0}
+        />
       </mesh>
 
       {/* selection ring */}

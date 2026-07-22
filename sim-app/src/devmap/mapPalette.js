@@ -37,6 +37,24 @@ export const STATE_LABELS = {
 
 export const stateColor = (state) => STATE_COLORS[state] || STATE_COLORS.available;
 
+/* Highlight for available projects you can afford to add right now — a gold
+   plot base that draws the eye to actionable picks. */
+export const ADD_HIGHLIGHT = "#EAB308";
+
+/* Does adding this project succeed right now? Mirrors the preview modal's
+   Select gate (affordable at the current month's inflated BAC) plus the
+   engine's concurrent-cap guard. Pure — pass the live sim. */
+export function isAddable(p, sim) {
+  if (!p || p.state !== "available") return false;
+  const cap = sim.config?.concurrentCap || 0;
+  if (cap > 0) {
+    const live = sim.projects.filter((x) => x.state === "active" || x.state === "pending").length;
+    if (live >= cap) return false;
+  }
+  const bac = p.bacInitial * Math.pow(1 + sim.monthlyRate, sim.month);
+  return bac <= sim.availableBalance + 1e-9;
+}
+
 /* ---- Height metrics -------------------------------------------------------
    Each metric is a stable magnitude comparable across all 30 projects
    regardless of state, so the city keeps a consistent skyline as the run

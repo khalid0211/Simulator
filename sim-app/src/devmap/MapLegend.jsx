@@ -6,7 +6,7 @@
    ============================================================ */
 
 import React from "react";
-import { HEIGHT_METRICS, STATE_ORDER, STATE_COLORS, STATE_LABELS } from "./mapPalette.js";
+import { HEIGHT_METRICS, STATE_ORDER, STATE_COLORS, STATE_LABELS, ADD_HIGHLIGHT } from "./mapPalette.js";
 import { CATEGORY_KEYS, CATEGORY_SHORT, CATEGORY_SHAPE } from "./buildingShape.js";
 
 const SHAPE_LABEL = { tower: "Tower", gabled: "Gabled", silo: "Silo / dome" };
@@ -61,6 +61,10 @@ export default function MapLegend({ metric, setMetric, chrome }) {
               {STATE_LABELS[s]}
             </span>
           ))}
+          <span style={item}>
+            <span style={{ ...swatch(ADD_HIGHLIGHT, 3), boxShadow: `0 0 5px ${ADD_HIGHLIGHT}` }} />
+            Affordable now
+          </span>
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "3px 12px", color: chrome.hudMuted }}>
           <span style={{ fontWeight: 700, letterSpacing: 0.3 }}>SHAPE:</span>

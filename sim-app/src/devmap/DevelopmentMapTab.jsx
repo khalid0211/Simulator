@@ -17,6 +17,7 @@ import { computeLayout } from "./cityLayout.js";
 import { CATEGORY_SHORT } from "./buildingShape.js";
 import {
   makeHeightScale, stateColor, STATE_LABELS, DEFAULT_METRIC, sceneChrome,
+  isAddable, ADD_HIGHLIGHT,
 } from "./mapPalette.js";
 
 const ACCENT = "#43D9C7"; // selection ring / HUD accent (theme-independent)
@@ -117,6 +118,8 @@ export default function DevelopmentMapTab({ sim, theme, actions }) {
               color={stateColor(p.state)}
               padColor={chrome.grid}
               accent={ACCENT}
+              addable={isAddable(p, sim)}
+              addColor={ADD_HIGHLIGHT}
               selected={selectedId === b.id}
               onSelect={handleSelect}
               onHover={setHoveredId}
