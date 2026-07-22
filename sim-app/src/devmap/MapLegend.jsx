@@ -52,9 +52,10 @@ export default function MapLegend({ metric, setMetric, chrome }) {
         </div>
       </div>
 
-      {/* Status + shape legend — bottom centre, slim two-row bar */}
-      <div style={{ position: "absolute", bottom: 10, left: "50%", transform: "translateX(-50%)", ...bar, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "7px 14px", maxWidth: "96%", fontSize: 10.5 }}>
-        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "3px 12px" }}>
+      {/* Status + shape legends — bottom centre, two separate panels */}
+      <div style={{ position: "absolute", bottom: 10, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "flex-end", justifyContent: "center", flexWrap: "wrap", gap: 10, maxWidth: "96%", fontSize: 10.5 }}>
+        {/* Status panel — 4 across */}
+        <div style={{ ...bar, display: "grid", gridTemplateColumns: "repeat(4, auto)", gap: "4px 14px", padding: "8px 14px" }}>
           {STATE_ORDER.map((s) => (
             <span key={s} style={item}>
               <span style={swatch(STATE_COLORS[s], 3)} />
@@ -66,7 +67,9 @@ export default function MapLegend({ metric, setMetric, chrome }) {
             Affordable now
           </span>
         </div>
-        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "3px 12px", color: chrome.hudMuted }}>
+
+        {/* Shape panel */}
+        <div style={{ ...bar, display: "flex", flexWrap: "wrap", alignItems: "center", gap: "4px 12px", padding: "8px 14px", color: chrome.hudMuted, maxWidth: 260 }}>
           <span style={{ fontWeight: 700, letterSpacing: 0.3 }}>SHAPE:</span>
           {CATEGORY_KEYS.map((c) => (
             <span key={c} style={item}>
