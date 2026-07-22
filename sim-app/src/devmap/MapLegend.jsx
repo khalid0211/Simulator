@@ -68,8 +68,9 @@ export default function MapLegend({ metric, setMetric, chrome }) {
           </span>
         </div>
 
-        {/* Shape panel */}
-        <div style={{ ...bar, display: "flex", flexWrap: "wrap", alignItems: "center", gap: "4px 12px", padding: "8px 14px", color: chrome.hudMuted, maxWidth: 260 }}>
+        {/* Shape panel — 2x2 grid so it matches the Status panel's height:
+            [SHAPE:] [Infrastructure] / [Social] [Agriculture] */}
+        <div style={{ ...bar, display: "grid", gridTemplateColumns: "auto auto", alignItems: "center", gap: "4px 14px", padding: "8px 14px", color: chrome.hudMuted }}>
           <span style={{ fontWeight: 700, letterSpacing: 0.3 }}>SHAPE:</span>
           {CATEGORY_KEYS.map((c) => (
             <span key={c} style={item}>
