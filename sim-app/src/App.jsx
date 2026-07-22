@@ -3589,9 +3589,10 @@ export default function App() {
   useEffect(() => {
     if (sim?.alerts?.length > 0) setTab("cash");
   }, [sim?.alerts?.length]);
-  // auto-switch to cash when previewing a project
+  // auto-switch to cash when previewing a project — but stay on the Development
+  // Map if that's where the preview was opened from
   useEffect(() => {
-    if (previewProject) setTab("cash");
+    if (previewProject && tab !== "devmap") setTab("cash");
   }, [previewProject]);
 
   const commit = (mut) => setSim((prev) => { const next = clone(prev); mut(next); return next; });

@@ -58,6 +58,15 @@ export default function DevelopmentMapTab({ sim, theme, actions }) {
     return m;
   }, [projects]);
 
+  // Available projects open the app's existing preview modal (cash-flow + Add);
+  // every other state opens the in-map inspector popup.
+  const handleSelect = (id) => {
+    const p = byId[id];
+    if (!p) return;
+    if (p.state === "available") { setSelectedId(null); actions.onPreview(p); }
+    else setSelectedId(id);
+  };
+
   const selected = selectedId ? byId[selectedId] : null;
   const hovered = hoveredId ? byId[hoveredId] : null;
   const hoveredPos = hoveredId ? buildings.find((b) => b.id === hoveredId) : null;
@@ -109,7 +118,7 @@ export default function DevelopmentMapTab({ sim, theme, actions }) {
               padColor={chrome.grid}
               accent={ACCENT}
               selected={selectedId === b.id}
-              onSelect={setSelectedId}
+              onSelect={handleSelect}
               onHover={setHoveredId}
             />
           );
