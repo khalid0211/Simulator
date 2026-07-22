@@ -39,7 +39,8 @@ export default function MapLegend({ metric, setMetric, chrome }) {
                 onClick={() => setMetric(m.key)}
                 title={`Scale building height by ${m.label}`}
                 style={{
-                  padding: "5px 10px", fontSize: 11.5, fontWeight: 600, cursor: "pointer",
+                  padding: "5px 12px", fontSize: 11.5, fontWeight: 600, cursor: "pointer",
+                  whiteSpace: "nowrap",
                   borderRadius: 6, border: `1px solid ${on ? chrome.hudText : chrome.grid}`,
                   background: on ? chrome.hudText : "transparent",
                   color: on ? chrome.background : chrome.hudMuted,
